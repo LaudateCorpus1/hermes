@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -21,13 +21,16 @@ namespace vm {
 class StorageProvider {
  public:
   StorageProvider() = default;
-  virtual ~StorageProvider() = default;
+  virtual ~StorageProvider();
 
   /// @name Factories
   /// @{
 
   /// Provide storage from mmap'ed separate regions.
   static std::unique_ptr<StorageProvider> mmapProvider();
+
+  /// Provide storage from a contiguous mmap'ed region.
+  static std::unique_ptr<StorageProvider> contiguousVAProvider(size_t size);
 
   /// Provide storage via malloc.
   static std::unique_ptr<StorageProvider> mallocProvider();

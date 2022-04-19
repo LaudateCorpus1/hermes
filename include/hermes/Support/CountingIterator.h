@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,8 +14,14 @@ namespace hermes {
 
 // Iterator that counts number of operator++ invocations
 template <typename T>
-class CountingIterator : public std::iterator<std::input_iterator_tag, T> {
+class CountingIterator {
  public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type = T;
+  using difference_type = std::ptrdiff_t;
+  using pointer = value_type *;
+  using reference = value_type &;
+
   CountingIterator() = default;
   CountingIterator(const CountingIterator &cit) : count_(cit.count_) {}
 

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -60,7 +60,7 @@ import typeof Foo, {bar} from 'foo';
 // CHECK-NEXT:             }
 // CHECK-NEXT:           }
 // CHECK-NEXT:         },
-// CHECK-NEXT:         "attributes": [],
+// CHECK-NEXT:         "assertions": [],
 // CHECK-NEXT:         "importKind": "type",
 // CHECK-NEXT:         "loc": {
 // CHECK-NEXT:           "start": {
@@ -161,7 +161,7 @@ import typeof Foo, {bar} from 'foo';
 // CHECK-NEXT:             }
 // CHECK-NEXT:           }
 // CHECK-NEXT:         },
-// CHECK-NEXT:         "attributes": [],
+// CHECK-NEXT:         "assertions": [],
 // CHECK-NEXT:         "importKind": "typeof",
 // CHECK-NEXT:         "loc": {
 // CHECK-NEXT:           "start": {

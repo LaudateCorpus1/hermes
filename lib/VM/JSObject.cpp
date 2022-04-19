@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -23,13 +23,12 @@ namespace vm {
 
 const ObjectVTable JSObject::vt{
     VTable(
-        CellKind::ObjectKind,
+        CellKind::JSObjectKind,
         cellSize<JSObject>(),
         nullptr,
         nullptr,
         nullptr,
         nullptr,
-        nullptr, // externalMemorySize
         VTable::HeapSnapshotMetadata{
             HeapSnapshot::NodeType::Object,
             JSObject::_snapshotNameImpl,
@@ -45,12 +44,12 @@ const ObjectVTable JSObject::vt{
     JSObject::_checkAllOwnIndexedImpl,
 };
 
-void ObjectBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
+void JSObjectBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
   // This call is just for debugging and consistency purposes.
   mb.addJSObjectOverlapSlots(JSObject::numOverlapSlots<JSObject>());
 
   const auto *self = static_cast<const JSObject *>(cell);
-  mb.setVTable(&JSObject::vt.base);
+  mb.setVTable(&JSObject::vt);
   mb.addField("parent", &self->parent_);
   mb.addField("class", &self->clazz_);
   mb.addField("propStorage", &self->propStorage_);
@@ -69,90 +68,46 @@ void ObjectBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
   }
 }
 
-#ifdef HERMESVM_SERIALIZE
-void JSObject::serializeObjectImpl(
-    Serializer &s,
-    const GCCell *cell,
-    unsigned overlapSlots) {
-  auto *self = vmcast<const JSObject>(cell);
-  s.writeData(&self->flags_, sizeof(ObjectFlags));
-  s.writeRelocation(self->parent_.get(s.getRuntime()));
-  s.writeRelocation(self->clazz_.get(s.getRuntime()));
-  s.writeRelocation(self->propStorage_.get(s.getRuntime()));
-
-  // Record the number of overlap slots, so that the deserialization code
-  // doesn't need to keep track of it.
-  s.writeInt<uint8_t>(overlapSlots);
-  for (size_t i = overlapSlots; i < JSObject::DIRECT_PROPERTY_SLOTS; i++) {
-    s.writeSmallHermesValue(self->directProps()[i]);
-  }
-}
-
-void ObjectSerialize(Serializer &s, const GCCell *cell) {
-  JSObject::serializeObjectImpl(s, cell, JSObject::numOverlapSlots<JSObject>());
-  s.endObject(cell);
-}
-
-void ObjectDeserialize(Deserializer &d, CellKind kind) {
-  assert(kind == CellKind::ObjectKind && "Expected JSObject");
-  auto *obj = d.getRuntime()->makeAFixed<JSObject>(d, &JSObject::vt.base);
-  d.endObject(obj);
-}
-
-JSObject::JSObject(Deserializer &d, const VTable *vtp)
-    : GCCell(&d.getRuntime()->getHeap(), vtp) {
-  d.readData(&flags_, sizeof(ObjectFlags));
-  d.readRelocation(&parent_, RelocationKind::GCPointer);
-  d.readRelocation(&clazz_, RelocationKind::GCPointer);
-  d.readRelocation(&propStorage_, RelocationKind::GCPointer);
-
-  auto overlapSlots = d.readInt<uint8_t>();
-  for (size_t i = overlapSlots; i < JSObject::DIRECT_PROPERTY_SLOTS; i++) {
-    d.readSmallHermesValue(&directProps()[i]);
-  }
-}
-#endif
-
 PseudoHandle<JSObject> JSObject::create(
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> parentHandle) {
-  auto *cell = runtime->makeAFixed<JSObject>(
+  auto *cell = runtime.makeAFixed<JSObject>(
       runtime,
-      &vt.base,
       parentHandle,
-      runtime->getHiddenClassForPrototype(
+      runtime.getHiddenClassForPrototype(
           *parentHandle, numOverlapSlots<JSObject>()),
       GCPointerBase::NoBarriers());
   return JSObjectInit::initToPseudoHandle(runtime, cell);
 }
 
-PseudoHandle<JSObject> JSObject::create(Runtime *runtime) {
-  return create(runtime, Handle<JSObject>::vmcast(&runtime->objectPrototype));
+PseudoHandle<JSObject> JSObject::create(Runtime &runtime) {
+  return create(runtime, Handle<JSObject>::vmcast(&runtime.objectPrototype));
 }
 
 PseudoHandle<JSObject> JSObject::create(
-    Runtime *runtime,
+    Runtime &runtime,
     unsigned propertyCount) {
   auto self = create(runtime);
 
-  return runtime->ignoreAllocationFailure(
+  return runtime.ignoreAllocationFailure(
       JSObject::allocatePropStorage(std::move(self), runtime, propertyCount));
 }
 
 PseudoHandle<JSObject> JSObject::create(
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<HiddenClass> clazz) {
   auto obj = JSObject::create(runtime, clazz->getNumProperties());
-  obj->clazz_.set(runtime, *clazz, &runtime->getHeap());
+  obj->clazz_.setNonNull(runtime, *clazz, runtime.getHeap());
   // If the hidden class has index like property, we need to clear the fast path
   // flag.
-  if (LLVM_UNLIKELY(obj->clazz_.get(runtime)->getHasIndexLikeProperties()))
+  if (LLVM_UNLIKELY(
+          obj->clazz_.getNonNull(runtime)->getHasIndexLikeProperties()))
     obj->flags_.fastIndexProperties = false;
   return obj;
 }
 
 void JSObject::initializeLazyObject(
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> lazyObject) {
   assert(lazyObject->flags_.lazyObject && "object must be lazy");
   // object is now assumed to be a regular object.
@@ -163,12 +118,12 @@ void JSObject::initializeLazyObject(
   Callable::defineLazyProperties(Handle<Callable>::vmcast(lazyObject), runtime);
 }
 
-ObjectID JSObject::getObjectID(JSObject *self, Runtime *runtime) {
+ObjectID JSObject::getObjectID(JSObject *self, Runtime &runtime) {
   if (LLVM_LIKELY(self->flags_.objectID))
     return self->flags_.objectID;
 
   // Object ID does not yet exist, get next unique global ID..
-  self->flags_.objectID = runtime->generateNextObjectID();
+  self->flags_.objectID = runtime.generateNextObjectID();
   // Make sure it is not zero.
   if (LLVM_UNLIKELY(!self->flags_.objectID))
     --self->flags_.objectID;
@@ -177,19 +132,19 @@ ObjectID JSObject::getObjectID(JSObject *self, Runtime *runtime) {
 
 CallResult<PseudoHandle<JSObject>> JSObject::getPrototypeOf(
     PseudoHandle<JSObject> selfHandle,
-    Runtime *runtime) {
+    Runtime &runtime) {
   if (LLVM_LIKELY(!selfHandle->isProxyObject())) {
     return createPseudoHandle(selfHandle->getParent(runtime));
   }
 
   return JSProxy::getPrototypeOf(
-      runtime->makeHandle(std::move(selfHandle)), runtime);
+      runtime.makeHandle(std::move(selfHandle)), runtime);
 }
 
 namespace {
 
 CallResult<bool> proxyOpFlags(
-    Runtime *runtime,
+    Runtime &runtime,
     PropOpFlags opFlags,
     const char *msg,
     CallResult<bool> res) {
@@ -197,7 +152,7 @@ CallResult<bool> proxyOpFlags(
     return ExecutionStatus::EXCEPTION;
   }
   if (!*res && opFlags.getThrowOnError()) {
-    return runtime->raiseTypeError(msg);
+    return runtime.raiseTypeError(msg);
   }
   return res;
 }
@@ -206,7 +161,7 @@ CallResult<bool> proxyOpFlags(
 
 CallResult<bool> JSObject::setParent(
     JSObject *self,
-    Runtime *runtime,
+    Runtime &runtime,
     JSObject *parent,
     PropOpFlags opFlags) {
   if (LLVM_UNLIKELY(self->isProxyObject())) {
@@ -215,7 +170,7 @@ CallResult<bool> JSObject::setParent(
         opFlags,
         "Object is not extensible.",
         JSProxy::setPrototypeOf(
-            runtime->makeHandle(self), runtime, runtime->makeHandle(parent)));
+            runtime.makeHandle(self), runtime, runtime.makeHandle(parent)));
   }
   // ES9 9.1.2
   // 4.
@@ -224,7 +179,7 @@ CallResult<bool> JSObject::setParent(
   // 5.
   if (!self->isExtensible()) {
     if (opFlags.getThrowOnError()) {
-      return runtime->raiseTypeError("Object is not extensible.");
+      return runtime.raiseTypeError("Object is not extensible.");
     } else {
       return false;
     }
@@ -233,7 +188,7 @@ CallResult<bool> JSObject::setParent(
   for (JSObject *cur = parent; cur; cur = cur->parent_.get(runtime)) {
     if (cur == self) {
       if (opFlags.getThrowOnError()) {
-        return runtime->raiseTypeError("Prototype cycle detected");
+        return runtime.raiseTypeError("Prototype cycle detected");
       } else {
         return false;
       }
@@ -244,20 +199,20 @@ CallResult<bool> JSObject::setParent(
     }
   }
   // 9.
-  self->parent_.set(runtime, parent, &runtime->getHeap());
+  self->parent_.set(runtime, parent, runtime.getHeap());
   // 10.
   return true;
 }
 
 void JSObject::allocateNewSlotStorage(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SlotIndex newSlotIndex,
     Handle<> valueHandle) {
   // If it is a direct property, just store the value and we are done.
   if (LLVM_LIKELY(newSlotIndex < DIRECT_PROPERTY_SLOTS)) {
     auto shv = SmallHermesValue::encodeHermesValue(*valueHandle, runtime);
-    selfHandle->directProps()[newSlotIndex].set(shv, &runtime->getHeap());
+    selfHandle->directProps()[newSlotIndex].set(shv, runtime.getHeap());
     return;
   }
 
@@ -268,20 +223,20 @@ void JSObject::allocateNewSlotStorage(
   if (LLVM_UNLIKELY(!selfHandle->propStorage_)) {
     // Allocate new storage.
     assert(newSlotIndex == 0 && "allocated slot must be at end");
-    auto arrRes = runtime->ignoreAllocationFailure(
+    auto arrRes = runtime.ignoreAllocationFailure(
         PropStorage::create(runtime, DEFAULT_PROPERTY_CAPACITY));
-    selfHandle->propStorage_.set(
-        runtime, vmcast<PropStorage>(arrRes), &runtime->getHeap());
+    selfHandle->propStorage_.setNonNull(
+        runtime, vmcast<PropStorage>(arrRes), runtime.getHeap());
   } else if (LLVM_UNLIKELY(
                  newSlotIndex >=
-                 selfHandle->propStorage_.get(runtime)->capacity())) {
+                 selfHandle->propStorage_.getNonNull(runtime)->capacity())) {
     // Reallocate the existing one.
     assert(
-        newSlotIndex == selfHandle->propStorage_.get(runtime)->size() &&
+        newSlotIndex == selfHandle->propStorage_.getNonNull(runtime)->size() &&
         "allocated slot must be at end");
-    auto hnd = runtime->makeMutableHandle(selfHandle->propStorage_);
+    auto hnd = runtime.makeMutableHandle(selfHandle->propStorage_);
     PropStorage::resize(hnd, runtime, newSlotIndex + 1);
-    selfHandle->propStorage_.set(runtime, *hnd, &runtime->getHeap());
+    selfHandle->propStorage_.setNonNull(runtime, *hnd, runtime.getHeap());
   }
 
   {
@@ -299,12 +254,12 @@ void JSObject::allocateNewSlotStorage(
   auto shv = SmallHermesValue::encodeHermesValue(*valueHandle, runtime);
   // If we don't need to resize, just store it directly.
   selfHandle->propStorage_.getNonNull(runtime)->set(
-      newSlotIndex, shv, &runtime->getHeap());
+      newSlotIndex, shv, runtime.getHeap());
 }
 
 CallResult<PseudoHandle<>> JSObject::getNamedPropertyValue_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> propObj,
     NamedPropertyDescriptor desc) {
   if (LLVM_LIKELY(!desc.flags.accessor))
@@ -318,13 +273,13 @@ CallResult<PseudoHandle<>> JSObject::getNamedPropertyValue_RJS(
     return createPseudoHandle(HermesValue::encodeUndefinedValue());
 
   // Execute the accessor on this object.
-  return accessor->getter.get(runtime)->executeCall0(
-      runtime->makeHandle(accessor->getter), runtime, selfHandle);
+  return accessor->getter.getNonNull(runtime)->executeCall0(
+      runtime.makeHandle(accessor->getter), runtime, selfHandle);
 }
 
 CallResult<PseudoHandle<>> JSObject::getComputedPropertyValueInternal_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> propObj,
     ComputedPropertyDescriptor desc) {
   assert(
@@ -341,13 +296,13 @@ CallResult<PseudoHandle<>> JSObject::getComputedPropertyValueInternal_RJS(
     return createPseudoHandle(HermesValue::encodeUndefinedValue());
 
   // Execute the accessor on this object.
-  return accessor->getter.get(runtime)->executeCall0(
-      runtime->makeHandle(accessor->getter), runtime, selfHandle);
+  return accessor->getter.getNonNull(runtime)->executeCall0(
+      runtime.makeHandle(accessor->getter), runtime, selfHandle);
 }
 
 CallResult<PseudoHandle<>> JSObject::getComputedPropertyValue_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> propObj,
     MutableHandle<SymbolID> &tmpSymbolStorage,
     ComputedPropertyDescriptor desc,
@@ -377,7 +332,7 @@ CallResult<PseudoHandle<>> JSObject::getComputedPropertyValue_RJS(
 
 CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     OwnKeysFlags okFlags) {
   assert(
       (okFlags.getIncludeNonSymbols() || okFlags.getIncludeSymbols()) &&
@@ -390,7 +345,7 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
       if (LLVM_UNLIKELY(proxyRes == ExecutionStatus::EXCEPTION)) {
         return ExecutionStatus::EXCEPTION;
       }
-      return runtime->makeHandle(std::move(*proxyRes));
+      return runtime.makeHandle(std::move(*proxyRes));
     }
     assert(selfHandle->flags_.lazyObject && "descriptor flags are impossible");
     initializeLazyObject(runtime, selfHandle);
@@ -401,8 +356,8 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
   // Estimate the capacity of the output array.  This estimate is only
   // reasonable for the non-symbol case.
   uint32_t capacity = okFlags.getIncludeNonSymbols()
-      ? (selfHandle->clazz_.get(runtime)->getNumProperties() + range.second -
-         range.first)
+      ? (selfHandle->clazz_.getNonNull(runtime)->getNumProperties() +
+         range.second - range.first)
       : 0;
 
   auto arrayRes = JSArray::create(runtime, capacity, 0);
@@ -469,9 +424,9 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
     numIndexed = index;
 
     HiddenClass::forEachProperty(
-        runtime->makeHandle(selfHandle->clazz_),
+        runtime.makeHandle(selfHandle->clazz_),
         runtime,
-        [runtime,
+        [&runtime,
          okFlags,
          array,
          hostObjectSymbolCount,
@@ -500,14 +455,14 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
           // away to deal with it later. This check should be fast since most
           // property names don't start with a digit.
           auto propNameAsIndex = toArrayIndex(
-              runtime->getIdentifierTable().getStringView(runtime, id));
+              runtime.getIdentifierTable().getStringView(runtime, id));
           if (LLVM_UNLIKELY(propNameAsIndex)) {
             indexNames.push_back(*propNameAsIndex);
             return;
           }
 
           tmpHandle = HermesValue::encodeStringValue(
-              runtime->getStringPrimFromSymbolID(id));
+              runtime.getStringPrimFromSymbolID(id));
           JSArray::setElementAt(array, runtime, index++, tmpHandle);
         });
 
@@ -527,13 +482,13 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
               !InternalProperty::isInternal(id) &&
               "host object returned reserved symbol");
           auto propNameAsIndex = toArrayIndex(
-              runtime->getIdentifierTable().getStringView(runtime, id));
+              runtime.getIdentifierTable().getStringView(runtime, id));
           if (LLVM_UNLIKELY(propNameAsIndex)) {
             indexNames.push_back(*propNameAsIndex);
             continue;
           }
           tmpHandle = HermesValue::encodeStringValue(
-              runtime->getStringPrimFromSymbolID(id));
+              runtime.getStringPrimFromSymbolID(id));
           JSArray::setElementAt(array, runtime, index++, tmpHandle);
         }
       }
@@ -546,9 +501,9 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
   if (okFlags.getIncludeSymbols()) {
     MutableHandle<SymbolID> idHandle{runtime};
     HiddenClass::forEachProperty(
-        runtime->makeHandle(selfHandle->clazz_),
+        runtime.makeHandle(selfHandle->clazz_),
         runtime,
-        [runtime, okFlags, array, &index, &idHandle](
+        [&runtime, okFlags, array, &index, &idHandle](
             SymbolID id, NamedPropertyDescriptor desc) {
           if (!isSymbolPrimitive(id)) {
             return;
@@ -593,7 +548,7 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
        last != numIndexed;) {
     --last;
     --toLast;
-    tmpHandle = array->at(runtime, last);
+    tmpHandle = array->at(runtime, last).unboxToHV(runtime);
     JSArray::setElementAt(array, runtime, toLast, tmpHandle);
   }
 
@@ -605,7 +560,8 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
                 indexNamesLast = indexNames.size();
        toLast != 0;) {
     if (numIndexed) {
-      uint32_t a = (uint32_t)array->at(runtime, numIndexed - 1).getNumber();
+      uint32_t a =
+          (uint32_t)array->at(runtime, numIndexed - 1).getNumber(runtime);
       uint32_t b;
 
       if (indexNamesLast && (b = indexNames[indexNamesLast - 1]) > a) {
@@ -693,7 +649,7 @@ struct JSObject::Helper {
 
   LLVM_ATTRIBUTE_ALWAYS_INLINE
   static OptValue<PropertyFlags>
-  getOwnIndexedPropertyFlags(JSObject *self, Runtime *runtime, uint32_t index) {
+  getOwnIndexedPropertyFlags(JSObject *self, Runtime &runtime, uint32_t index) {
     return JSObject::getOwnIndexedPropertyFlags(self, runtime, index);
   }
 
@@ -715,9 +671,9 @@ namespace {
 /// methods, so this function has to be local to the cpp file in order
 /// to be inlined for the perf win.
 LLVM_ATTRIBUTE_ALWAYS_INLINE
-CallResult<bool> getOwnComputedPrimitiveDescriptorImpl(
+inline CallResult<bool> getOwnComputedPrimitiveDescriptorImpl(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     JSObject::IgnoreProxy ignoreProxy,
     SymbolID &id,
@@ -822,7 +778,7 @@ CallResult<bool> getOwnComputedPrimitiveDescriptorImpl(
 
 CallResult<bool> JSObject::getOwnComputedPrimitiveDescriptor(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     JSObject::IgnoreProxy ignoreProxy,
     MutableHandle<SymbolID> &tmpSymbolStorage,
@@ -841,7 +797,7 @@ CallResult<bool> JSObject::getOwnComputedPrimitiveDescriptor(
 
 CallResult<bool> JSObject::getOwnComputedDescriptor(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     MutableHandle<SymbolID> &tmpSymbolStorage,
     ComputedPropertyDescriptor &desc) {
@@ -855,7 +811,7 @@ CallResult<bool> JSObject::getOwnComputedDescriptor(
 
 CallResult<bool> JSObject::getOwnComputedDescriptor(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     MutableHandle<SymbolID> &tmpSymbolStorage,
     ComputedPropertyDescriptor &desc,
@@ -894,7 +850,7 @@ CallResult<bool> JSObject::getOwnComputedDescriptor(
 
 JSObject *JSObject::getNamedDescriptorUnsafe(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     PropertyFlags expectedFlags,
     NamedPropertyDescriptor &desc) {
@@ -978,7 +934,7 @@ JSObject *JSObject::getNamedDescriptorUnsafe(
 
 ExecutionStatus JSObject::getComputedPrimitiveDescriptor(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     MutableHandle<JSObject> &propObj,
     MutableHandle<SymbolID> &tmpSymbolStorage,
@@ -1040,7 +996,7 @@ ExecutionStatus JSObject::getComputedPrimitiveDescriptor(
 
 ExecutionStatus JSObject::getComputedDescriptor(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     MutableHandle<JSObject> &propObj,
     MutableHandle<SymbolID> &tmpSymbolStorage,
@@ -1055,7 +1011,7 @@ ExecutionStatus JSObject::getComputedDescriptor(
 
 CallResult<PseudoHandle<>> JSObject::getNamedWithReceiver_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     Handle<> receiver,
     PropOpFlags opFlags,
@@ -1066,9 +1022,9 @@ CallResult<PseudoHandle<>> JSObject::getNamedWithReceiver_RJS(
   JSObject *propObj = getNamedDescriptorUnsafe(selfHandle, runtime, name, desc);
   if (!propObj) {
     if (LLVM_UNLIKELY(opFlags.getMustExist())) {
-      return runtime->raiseReferenceError(
+      return runtime.raiseReferenceError(
           TwineChar16("Property '") +
-          runtime->getIdentifierTable().getStringViewForDev(runtime, name) +
+          runtime.getIdentifierTable().getStringViewForDev(runtime, name) +
           "' doesn't exist");
     }
     return createPseudoHandle(HermesValue::encodeUndefinedValue());
@@ -1094,7 +1050,7 @@ CallResult<PseudoHandle<>> JSObject::getNamedWithReceiver_RJS(
 
     // Execute the accessor on this object.
     return Callable::executeCall0(
-        runtime->makeHandle(accessor->getter), runtime, receiver);
+        runtime.makeHandle(accessor->getter), runtime, receiver);
   } else if (desc.flags.hostObject) {
     auto res = vmcast<HostObject>(propObj)->get(name);
     if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {
@@ -1104,25 +1060,25 @@ CallResult<PseudoHandle<>> JSObject::getNamedWithReceiver_RJS(
   } else {
     assert(desc.flags.proxyObject && "descriptor flags are impossible");
     return JSProxy::getNamed(
-        runtime->makeHandle(propObj), runtime, name, receiver);
+        runtime.makeHandle(propObj), runtime, name, receiver);
   }
 }
 
 CallResult<PseudoHandle<>> JSObject::getNamedOrIndexed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     PropOpFlags opFlags) {
   if (LLVM_UNLIKELY(selfHandle->flags_.indexedStorage)) {
     // Note that getStringView can be satisfied without materializing the
     // Identifier.
     const auto strView =
-        runtime->getIdentifierTable().getStringView(runtime, name);
+        runtime.getIdentifierTable().getStringView(runtime, name);
     if (auto nameAsIndex = toArrayIndex(strView)) {
       return getComputed_RJS(
           selfHandle,
           runtime,
-          runtime->makeHandle(HermesValue::encodeNumberValue(*nameAsIndex)));
+          runtime.makeHandle(HermesValue::encodeNumberValue(*nameAsIndex)));
     }
     // Here we have indexed properties but the symbol was not index-like.
     // Fall through to getNamed().
@@ -1132,7 +1088,7 @@ CallResult<PseudoHandle<>> JSObject::getNamedOrIndexed(
 
 CallResult<PseudoHandle<>> JSObject::getComputedWithReceiver_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     Handle<> receiver) {
   // Try the fast-path first: no "index-like" properties and the "name" already
@@ -1190,8 +1146,8 @@ CallResult<PseudoHandle<>> JSObject::getComputedWithReceiver_RJS(
       return createPseudoHandle(HermesValue::encodeUndefinedValue());
 
     // Execute the accessor on this object.
-    return accessor->getter.get(runtime)->executeCall0(
-        runtime->makeHandle(accessor->getter), runtime, receiver);
+    return accessor->getter.getNonNull(runtime)->executeCall0(
+        runtime.makeHandle(accessor->getter), runtime, receiver);
   } else if (desc.flags.hostObject) {
     SymbolID id{};
     LAZY_TO_IDENTIFIER(runtime, nameValPrimitiveHandle, id);
@@ -1210,7 +1166,7 @@ CallResult<PseudoHandle<>> JSObject::getComputedWithReceiver_RJS(
 
 CallResult<bool> JSObject::hasNamed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name) {
   NamedPropertyDescriptor desc;
   JSObject *propObj = getNamedDescriptorUnsafe(selfHandle, runtime, name, desc);
@@ -1218,18 +1174,18 @@ CallResult<bool> JSObject::hasNamed(
     return false;
   }
   if (LLVM_UNLIKELY(desc.flags.proxyObject)) {
-    return JSProxy::hasNamed(runtime->makeHandle(propObj), runtime, name);
+    return JSProxy::hasNamed(runtime.makeHandle(propObj), runtime, name);
   }
   return true;
 }
 
 CallResult<bool> JSObject::hasNamedOrIndexed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name) {
   if (LLVM_UNLIKELY(selfHandle->flags_.indexedStorage)) {
     const auto strView =
-        runtime->getIdentifierTable().getStringView(runtime, name);
+        runtime.getIdentifierTable().getStringView(runtime, name);
     if (auto nameAsIndex = toArrayIndex(strView)) {
       if (haveOwnIndexed(selfHandle.get(), runtime, *nameAsIndex)) {
         return true;
@@ -1247,7 +1203,7 @@ CallResult<bool> JSObject::hasNamedOrIndexed(
 
 CallResult<bool> JSObject::hasComputed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle) {
   // Try the fast-path first: no "index-like" properties and the "name" already
   // is a valid integer index.
@@ -1304,10 +1260,10 @@ CallResult<bool> JSObject::hasComputed(
 
 static ExecutionStatus raiseErrorForOverridingStaticBuiltin(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<SymbolID> name) {
   Handle<StringPrimitive> methodNameHnd =
-      runtime->makeHandle(runtime->getStringPrimFromSymbolID(name.get()));
+      runtime.makeHandle(runtime.getStringPrimFromSymbolID(name.get()));
   // If the 'name' property does not exist or is an accessor, we don't display
   // the name.
   NamedPropertyDescriptor desc;
@@ -1318,7 +1274,7 @@ static ExecutionStatus raiseErrorForOverridingStaticBuiltin(
       "raiseErrorForOverridingStaticBuiltin cannot be used with proxy objects");
 
   if (!obj || desc.flags.accessor) {
-    return runtime->raiseTypeError(
+    return runtime.raiseTypeError(
         TwineChar16("Attempting to override read-only builtin method '") +
         TwineChar16(methodNameHnd.get()) + "'");
   }
@@ -1333,12 +1289,12 @@ static ExecutionStatus raiseErrorForOverridingStaticBuiltin(
   PseudoHandle<StringPrimitive> objName =
       PseudoHandle<StringPrimitive>::dyn_vmcast(std::move(*objNameRes));
   if (!objName) {
-    return runtime->raiseTypeError(
+    return runtime.raiseTypeError(
         TwineChar16("Attempting to override read-only builtin method '") +
         TwineChar16(methodNameHnd.get()) + "'");
   }
 
-  return runtime->raiseTypeError(
+  return runtime.raiseTypeError(
       TwineChar16("Attempting to override read-only builtin method '") +
       TwineChar16(objName.get()) + "." + TwineChar16(methodNameHnd.get()) +
       "'");
@@ -1346,7 +1302,7 @@ static ExecutionStatus raiseErrorForOverridingStaticBuiltin(
 
 CallResult<bool> JSObject::putNamedWithReceiver_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     Handle<> valueHandle,
     Handle<> receiver,
@@ -1390,17 +1346,17 @@ CallResult<bool> JSObject::putNamedWithReceiver_RJS(
       // If it is a read-only accessor, fail.
       if (!accessor->setter) {
         if (opFlags.getThrowOnError()) {
-          return runtime->raiseTypeError(
+          return runtime.raiseTypeError(
               TwineChar16("Cannot assign to property '") +
-              runtime->getIdentifierTable().getStringViewForDev(runtime, name) +
+              runtime.getIdentifierTable().getStringViewForDev(runtime, name) +
               "' which has only a getter");
         }
         return false;
       }
 
       // Execute the accessor on this object.
-      if (accessor->setter.get(runtime)->executeCall1(
-              runtime->makeHandle(accessor->setter),
+      if (accessor->setter.getNonNull(runtime)->executeCall1(
+              runtime.makeHandle(accessor->setter),
               runtime,
               receiver,
               *valueHandle) == ExecutionStatus::EXCEPTION) {
@@ -1414,14 +1370,14 @@ CallResult<bool> JSObject::putNamedWithReceiver_RJS(
           !opFlags.getMustExist() &&
           "MustExist cannot be used with Proxy objects");
       CallResult<bool> setRes = JSProxy::setNamed(
-          runtime->makeHandle(propObj), runtime, name, valueHandle, receiver);
+          runtime.makeHandle(propObj), runtime, name, valueHandle, receiver);
       if (LLVM_UNLIKELY(setRes == ExecutionStatus::EXCEPTION)) {
         return ExecutionStatus::EXCEPTION;
       }
       if (!*setRes && opFlags.getThrowOnError()) {
-        return runtime->raiseTypeError(
+        return runtime.raiseTypeError(
             TwineChar16("Proxy set returned false for property '") +
-            runtime->getIdentifierTable().getStringView(runtime, name) + "'");
+            runtime.getIdentifierTable().getStringView(runtime, name) + "'");
       }
       return setRes;
     }
@@ -1429,12 +1385,12 @@ CallResult<bool> JSObject::putNamedWithReceiver_RJS(
     if (LLVM_UNLIKELY(!desc.flags.writable)) {
       if (desc.flags.staticBuiltin) {
         return raiseErrorForOverridingStaticBuiltin(
-            selfHandle, runtime, runtime->makeHandle(name));
+            selfHandle, runtime, runtime.makeHandle(name));
       }
       if (opFlags.getThrowOnError()) {
-        return runtime->raiseTypeError(
+        return runtime.raiseTypeError(
             TwineChar16("Cannot assign to read-only property '") +
-            runtime->getIdentifierTable().getStringViewForDev(runtime, name) +
+            runtime.getIdentifierTable().getStringViewForDev(runtime, name) +
             "'");
       }
       return false;
@@ -1484,7 +1440,7 @@ CallResult<bool> JSObject::putNamedWithReceiver_RJS(
             ->set(name, *valueHandle);
       }
       ComputedPropertyDescriptor desc;
-      Handle<> nameValHandle = runtime->makeHandle(name);
+      Handle<> nameValHandle = runtime.makeHandle(name);
       CallResult<bool> descDefinedRes = getOwnComputedPrimitiveDescriptor(
           receiverHandle,
           runtime,
@@ -1508,9 +1464,9 @@ CallResult<bool> JSObject::putNamedWithReceiver_RJS(
 
   // Does the caller require it to exist?
   if (LLVM_UNLIKELY(opFlags.getMustExist())) {
-    return runtime->raiseReferenceError(
+    return runtime.raiseReferenceError(
         TwineChar16("Property '") +
-        runtime->getIdentifierTable().getStringViewForDev(runtime, name) +
+        runtime.getIdentifierTable().getStringViewForDev(runtime, name) +
         "' doesn't exist");
   }
 
@@ -1527,7 +1483,7 @@ CallResult<bool> JSObject::putNamedWithReceiver_RJS(
 
 CallResult<bool> JSObject::putNamedOrIndexed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     Handle<> valueHandle,
     PropOpFlags opFlags) {
@@ -1535,12 +1491,12 @@ CallResult<bool> JSObject::putNamedOrIndexed(
     // Note that getStringView can be satisfied without materializing the
     // Identifier.
     const auto strView =
-        runtime->getIdentifierTable().getStringView(runtime, name);
+        runtime.getIdentifierTable().getStringView(runtime, name);
     if (auto nameAsIndex = toArrayIndex(strView)) {
       return putComputed_RJS(
           selfHandle,
           runtime,
-          runtime->makeHandle(HermesValue::encodeNumberValue(*nameAsIndex)),
+          runtime.makeHandle(HermesValue::encodeNumberValue(*nameAsIndex)),
           valueHandle,
           opFlags);
     }
@@ -1552,7 +1508,7 @@ CallResult<bool> JSObject::putNamedOrIndexed(
 
 CallResult<bool> JSObject::putComputedWithReceiver_RJS(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     Handle<> valueHandle,
     Handle<> receiver,
@@ -1576,7 +1532,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
             return true;
           if (opFlags.getThrowOnError()) {
             // TODO: better message.
-            return runtime->raiseTypeError(
+            return runtime.raiseTypeError(
                 "Cannot assign to read-only property");
           }
           return false;
@@ -1642,7 +1598,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
       // If it is a read-only accessor, fail.
       if (!accessor->setter) {
         if (opFlags.getThrowOnError()) {
-          return runtime->raiseTypeErrorForValue(
+          return runtime.raiseTypeErrorForValue(
               "Cannot assign to property ",
               nameValPrimitiveHandle,
               " which has only a getter");
@@ -1651,8 +1607,8 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
       }
 
       // Execute the accessor on this object.
-      if (accessor->setter.get(runtime)->executeCall1(
-              runtime->makeHandle(accessor->setter),
+      if (accessor->setter.getNonNull(runtime)->executeCall1(
+              runtime.makeHandle(accessor->setter),
               runtime,
               receiver,
               valueHandle.get()) == ExecutionStatus::EXCEPTION) {
@@ -1675,7 +1631,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
       }
       if (!*setRes && opFlags.getThrowOnError()) {
         // TODO: better message.
-        return runtime->raiseTypeError(
+        return runtime.raiseTypeError(
             TwineChar16("Proxy trap returned false for property"));
       }
       return setRes;
@@ -1686,10 +1642,10 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
         SymbolID id{};
         LAZY_TO_IDENTIFIER(runtime, nameValPrimitiveHandle, id);
         return raiseErrorForOverridingStaticBuiltin(
-            selfHandle, runtime, runtime->makeHandle(id));
+            selfHandle, runtime, runtime.makeHandle(id));
       }
       if (opFlags.getThrowOnError()) {
-        return runtime->raiseTypeErrorForValue(
+        return runtime.raiseTypeErrorForValue(
             "Cannot assign to read-only property ", nameValPrimitiveHandle, "");
       }
       return false;
@@ -1796,7 +1752,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
   /// Can we add more properties?
   if (LLVM_UNLIKELY(!receiverHandle->isExtensible())) {
     if (opFlags.getThrowOnError()) {
-      return runtime->raiseTypeError(
+      return runtime.raiseTypeError(
           "cannot add a new property"); // TODO: better message.
     }
     return false;
@@ -1816,7 +1772,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
               receiverHandle,
               runtime,
               Predefined::getSymbolID(Predefined::length),
-              runtime->makeHandle(
+              runtime.makeHandle(
                   HermesValue::encodeNumberValue(*arrayIndex + 1)),
               opFlags);
           if (LLVM_UNLIKELY(cr == ExecutionStatus::EXCEPTION))
@@ -1835,7 +1791,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
 
       if (opFlags.getThrowOnError()) {
         // TODO: better message.
-        return runtime->raiseTypeError("Cannot assign to read-only property");
+        return runtime.raiseTypeError("Cannot assign to read-only property");
       }
       return false;
     }
@@ -1856,7 +1812,7 @@ CallResult<bool> JSObject::putComputedWithReceiver_RJS(
 
 CallResult<bool> JSObject::deleteNamed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     PropOpFlags opFlags) {
   assert(
@@ -1890,9 +1846,9 @@ CallResult<bool> JSObject::deleteNamed(
   // If the property isn't configurable, fail.
   if (LLVM_UNLIKELY(!desc.flags.configurable)) {
     if (opFlags.getThrowOnError()) {
-      return runtime->raiseTypeError(
+      return runtime.raiseTypeError(
           TwineChar16("Property '") +
-          runtime->getIdentifierTable().getStringViewForDev(runtime, name) +
+          runtime.getIdentifierTable().getStringViewForDev(runtime, name) +
           "' is not configurable");
     }
     return false;
@@ -1904,15 +1860,15 @@ CallResult<bool> JSObject::deleteNamed(
 
   // Perform the actual deletion.
   auto newClazz = HiddenClass::deleteProperty(
-      runtime->makeHandle(selfHandle->clazz_), runtime, *pos);
-  selfHandle->clazz_.set(runtime, *newClazz, &runtime->getHeap());
+      runtime.makeHandle(selfHandle->clazz_), runtime, *pos);
+  selfHandle->clazz_.setNonNull(runtime, *newClazz, runtime.getHeap());
 
   return true;
 }
 
 CallResult<bool> JSObject::deleteComputed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     PropOpFlags opFlags) {
   assert(
@@ -1948,7 +1904,7 @@ CallResult<bool> JSObject::deleteComputed(
     // Cannot delete property (for example this may be a typed array).
     if (opFlags.getThrowOnError()) {
       // TODO: better error message.
-      return runtime->raiseTypeError("Cannot delete property");
+      return runtime.raiseTypeError("Cannot delete property");
     }
     return false;
   }
@@ -1974,7 +1930,7 @@ CallResult<bool> JSObject::deleteComputed(
     if (LLVM_UNLIKELY(!desc.flags.configurable)) {
       if (opFlags.getThrowOnError()) {
         // TODO: a better message.
-        return runtime->raiseTypeError("Property is not configurable");
+        return runtime.raiseTypeError("Property is not configurable");
       }
       return false;
     }
@@ -1990,7 +1946,7 @@ CallResult<bool> JSObject::deleteComputed(
       // Cannot delete property (for example this may be a typed array).
       if (opFlags.getThrowOnError()) {
         // TODO: better error message.
-        return runtime->raiseTypeError("Cannot delete property");
+        return runtime.raiseTypeError("Cannot delete property");
       }
       return false;
     }
@@ -2004,8 +1960,8 @@ CallResult<bool> JSObject::deleteComputed(
 
     // Remove the property descriptor.
     auto newClazz = HiddenClass::deleteProperty(
-        runtime->makeHandle(selfHandle->clazz_), runtime, *pos);
-    selfHandle->clazz_.set(runtime, *newClazz, &runtime->getHeap());
+        runtime.makeHandle(selfHandle->clazz_), runtime, *pos);
+    selfHandle->clazz_.setNonNull(runtime, *newClazz, runtime.getHeap());
   } else if (LLVM_UNLIKELY(selfHandle->flags_.proxyObject)) {
     CallResult<Handle<>> key = toPropertyKey(runtime, nameValPrimitiveHandle);
     if (key == ExecutionStatus::EXCEPTION)
@@ -2022,7 +1978,7 @@ CallResult<bool> JSObject::deleteComputed(
 
 CallResult<bool> JSObject::defineOwnPropertyInternal(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     DefinePropertyFlags dpFlags,
     Handle<> valueOrAccessor,
@@ -2067,9 +2023,9 @@ CallResult<bool> JSObject::defineOwnPropertyInternal(
       return JSProxy::defineOwnProperty(
           selfHandle,
           runtime,
-          name.isUniqued() ? runtime->makeHandle(HermesValue::encodeStringValue(
-                                 runtime->getStringPrimFromSymbolID(name)))
-                           : runtime->makeHandle(name),
+          name.isUniqued() ? runtime.makeHandle(HermesValue::encodeStringValue(
+                                 runtime.getStringPrimFromSymbolID(name)))
+                           : runtime.makeHandle(name),
           dpFlags,
           valueOrAccessor,
           opFlags);
@@ -2088,7 +2044,7 @@ CallResult<bool> JSObject::defineOwnPropertyInternal(
 
 ExecutionStatus JSObject::defineNewOwnProperty(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     PropertyFlags propertyFlags,
     Handle<> valueOrAccessor) {
@@ -2112,7 +2068,7 @@ ExecutionStatus JSObject::defineNewOwnProperty(
 
 CallResult<bool> JSObject::defineOwnComputedPrimitive(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     DefinePropertyFlags dpFlags,
     Handle<> valueOrAccessor,
@@ -2168,7 +2124,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
   // has an index-like name.
 
   // First check if a named property with the same name exists.
-  if (selfHandle->clazz_.get(runtime)->getHasIndexLikeProperties()) {
+  if (selfHandle->clazz_.getNonNull(runtime)->getHasIndexLikeProperties()) {
     LAZY_TO_IDENTIFIER(runtime, nameValHandle, id);
 
     NamedPropertyDescriptor desc;
@@ -2225,8 +2181,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
 
       if (opFlags.getThrowOnError()) {
         // TODO: better error message.
-        return runtime->raiseTypeError(
-            "cannot change read-only property value");
+        return runtime.raiseTypeError("cannot change read-only property value");
       }
 
       return false;
@@ -2255,7 +2210,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
     if (!deleteOwnIndexed(selfHandle, runtime, *arrayIndex)) {
       if (opFlags.getThrowOnError()) {
         // TODO: better error message.
-        return runtime->raiseTypeError("Cannot define property");
+        return runtime.raiseTypeError("Cannot define property");
       }
       return false;
     }
@@ -2268,7 +2223,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
   /// Can we add new properties?
   if (!selfHandle->isExtensible()) {
     if (opFlags.getThrowOnError()) {
-      return runtime->raiseTypeError(
+      return runtime.raiseTypeError(
           "cannot add a new property"); // TODO: better message.
     }
     return false;
@@ -2291,7 +2246,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
 
       if (!lengthDesc.flags.writable) {
         if (opFlags.getThrowOnError()) {
-          return runtime->raiseTypeError(
+          return runtime.raiseTypeError(
               "Cannot assign to read-only 'length' property of array");
         }
         return false;
@@ -2313,7 +2268,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
     if (!*result) {
       if (opFlags.getThrowOnError()) {
         // TODO: better error message.
-        return runtime->raiseTypeError("Cannot define property");
+        return runtime.raiseTypeError("Cannot define property");
       }
       return false;
     }
@@ -2341,7 +2296,7 @@ CallResult<bool> JSObject::defineOwnComputedPrimitive(
 
 CallResult<bool> JSObject::defineOwnComputed(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> nameValHandle,
     DefinePropertyFlags dpFlags,
     Handle<> valueOrAccessor,
@@ -2353,12 +2308,12 @@ CallResult<bool> JSObject::defineOwnComputed(
       selfHandle, runtime, *converted, dpFlags, valueOrAccessor, opFlags);
 }
 
-std::string JSObject::getHeuristicTypeName(GC *gc) {
-  PointerBase *const base = gc->getPointerBase();
+std::string JSObject::getHeuristicTypeName(GC &gc) {
+  PointerBase &base = gc.getPointerBase();
   if (auto constructorVal = tryGetNamedNoAlloc(
           this, base, Predefined::getSymbolID(Predefined::constructor))) {
     if (auto *constructor = dyn_vmcast<JSObject>(
-            constructorVal->unboxToHV(gc->getPointerBase()))) {
+            constructorVal->unboxToHV(gc.getPointerBase()))) {
       auto name = constructor->getNameIfExists(base);
       // If the constructor's name doesn't exist, or it is just the object
       // constructor, attempt to find a different name.
@@ -2367,7 +2322,7 @@ std::string JSObject::getHeuristicTypeName(GC *gc) {
     }
   }
 
-  std::string name = getVT()->base.snapshotMetaData.defaultNameForNode(this);
+  std::string name = getVT()->snapshotMetaData.defaultNameForNode(this);
   // A constructor's name was not found, check if the object is in dictionary
   // mode.
   if (getClass(base)->isDictionary()) {
@@ -2375,7 +2330,7 @@ std::string JSObject::getHeuristicTypeName(GC *gc) {
   }
 
   // If it's not an Object, the CellKind is most likely good enough on its own
-  if (getKind() != CellKind::ObjectKind) {
+  if (getKind() != CellKind::JSObjectKind) {
     return name;
   }
 
@@ -2385,12 +2340,12 @@ std::string JSObject::getHeuristicTypeName(GC *gc) {
   HiddenClass::forEachPropertyNoAlloc(
       getClass(base),
       base,
-      [gc, &propertyNames](SymbolID id, NamedPropertyDescriptor) {
+      [&gc, &propertyNames](SymbolID id, NamedPropertyDescriptor) {
         if (InternalProperty::isInternal(id)) {
           // Internal properties aren't user-visible, skip them.
           return;
         }
-        propertyNames.emplace_back(gc->convertSymbolToUTF8(id));
+        propertyNames.emplace_back(gc.convertSymbolToUTF8(id));
       });
   // NOTE: One option is to sort the property names before truncation, to
   // reduce the number of groups; however, by not sorting them it makes it
@@ -2432,7 +2387,7 @@ std::string JSObject::getHeuristicTypeName(GC *gc) {
   return name;
 }
 
-std::string JSObject::getNameIfExists(PointerBase *base) {
+std::string JSObject::getNameIfExists(PointerBase &base) {
   // Try "displayName" first, if it is defined.
   if (auto nameVal = tryGetNamedNoAlloc(
           this, base, Predefined::getSymbolID(Predefined::displayName))) {
@@ -2451,12 +2406,12 @@ std::string JSObject::getNameIfExists(PointerBase *base) {
   return "";
 }
 
-std::string JSObject::_snapshotNameImpl(GCCell *cell, GC *gc) {
+std::string JSObject::_snapshotNameImpl(GCCell *cell, GC &gc) {
   auto *const self = vmcast<JSObject>(cell);
   return self->getHeuristicTypeName(gc);
 }
 
-void JSObject::_snapshotAddEdgesImpl(GCCell *cell, GC *gc, HeapSnapshot &snap) {
+void JSObject::_snapshotAddEdgesImpl(GCCell *cell, GC &gc, HeapSnapshot &snap) {
   auto *const self = vmcast<JSObject>(cell);
 
   // Add the prototype as a property edge, so it's easy for JS developers to
@@ -2466,27 +2421,27 @@ void JSObject::_snapshotAddEdgesImpl(GCCell *cell, GC *gc, HeapSnapshot &snap) {
         HeapSnapshot::EdgeType::Property,
         // __proto__ chosen for similarity to V8.
         "__proto__",
-        gc->getObjectID(self->parent_));
+        gc.getObjectID(self->parent_));
   }
 
   HiddenClass::forEachPropertyNoAlloc(
-      self->clazz_.get(gc->getPointerBase()),
-      gc->getPointerBase(),
-      [self, gc, &snap](SymbolID id, NamedPropertyDescriptor desc) {
+      self->clazz_.get(gc.getPointerBase()),
+      gc.getPointerBase(),
+      [self, &gc, &snap](SymbolID id, NamedPropertyDescriptor desc) {
         if (InternalProperty::isInternal(id)) {
           // Internal properties aren't user-visible, skip them.
           return;
         }
         // Else, it's a user-visible property.
         HermesValue prop =
-            getNamedSlotValueUnsafe(self, gc->getPointerBase(), desc.slot)
-                .unboxToHV(gc->getPointerBase());
+            getNamedSlotValueUnsafe(self, gc.getPointerBase(), desc.slot)
+                .unboxToHV(gc.getPointerBase());
         const llvh::Optional<HeapSnapshot::NodeID> idForProp =
-            gc->getSnapshotID(prop);
+            gc.getSnapshotID(prop);
         if (!idForProp) {
           return;
         }
-        std::string propName = gc->convertSymbolToUTF8(id);
+        std::string propName = gc.convertSymbolToUTF8(id);
         // If the property name is a valid array index, display it as an
         // "element" instead of a "property". This will put square brackets
         // around the number and sort it numerically rather than
@@ -2505,10 +2460,10 @@ void JSObject::_snapshotAddEdgesImpl(GCCell *cell, GC *gc, HeapSnapshot &snap) {
 
 void JSObject::_snapshotAddLocationsImpl(
     GCCell *cell,
-    GC *gc,
+    GC &gc,
     HeapSnapshot &snap) {
   auto *const self = vmcast<JSObject>(cell);
-  PointerBase *const base = gc->getPointerBase();
+  PointerBase &base = gc.getPointerBase();
   // Add the location of the constructor function for this object, if that
   // constructor is a user-defined JS function.
   if (auto constructorVal = tryGetNamedNoAlloc(
@@ -2516,7 +2471,7 @@ void JSObject::_snapshotAddLocationsImpl(
     if (constructorVal->isObject()) {
       if (auto *constructor =
               dyn_vmcast<JSFunction>(constructorVal->getObject(base))) {
-        constructor->addLocationToSnapshot(snap, gc->getObjectID(self));
+        constructor->addLocationToSnapshot(snap, gc.getObjectID(self));
       }
     }
   }
@@ -2524,37 +2479,37 @@ void JSObject::_snapshotAddLocationsImpl(
 
 std::pair<uint32_t, uint32_t> JSObject::_getOwnIndexedRangeImpl(
     JSObject *self,
-    Runtime *runtime) {
+    Runtime &runtime) {
   return {0, 0};
 }
 
-bool JSObject::_haveOwnIndexedImpl(JSObject *self, Runtime *, uint32_t) {
+bool JSObject::_haveOwnIndexedImpl(JSObject *self, Runtime &, uint32_t) {
   return false;
 }
 
 OptValue<PropertyFlags> JSObject::_getOwnIndexedPropertyFlagsImpl(
     JSObject *self,
-    Runtime *runtime,
+    Runtime &runtime,
     uint32_t) {
   return llvh::None;
 }
 
-HermesValue JSObject::_getOwnIndexedImpl(JSObject *, Runtime *, uint32_t) {
+HermesValue JSObject::_getOwnIndexedImpl(JSObject *, Runtime &, uint32_t) {
   return HermesValue::encodeEmptyValue();
 }
 
 CallResult<bool>
-JSObject::_setOwnIndexedImpl(Handle<JSObject>, Runtime *, uint32_t, Handle<>) {
+JSObject::_setOwnIndexedImpl(Handle<JSObject>, Runtime &, uint32_t, Handle<>) {
   return false;
 }
 
-bool JSObject::_deleteOwnIndexedImpl(Handle<JSObject>, Runtime *, uint32_t) {
+bool JSObject::_deleteOwnIndexedImpl(Handle<JSObject>, Runtime &, uint32_t) {
   return false;
 }
 
 bool JSObject::_checkAllOwnIndexedImpl(
     JSObject * /*self*/,
-    Runtime * /*runtime*/,
+    Runtime & /*runtime*/,
     ObjectVTable::CheckAllOwnIndexedMode /*mode*/) {
   return true;
 }
@@ -2568,7 +2523,7 @@ void JSObject::preventExtensions(JSObject *self) {
 
 CallResult<bool> JSObject::preventExtensions(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     PropOpFlags opFlags) {
   if (LLVM_UNLIKELY(selfHandle->isProxyObject())) {
     return JSProxy::preventExtensions(selfHandle, runtime, opFlags);
@@ -2577,7 +2532,7 @@ CallResult<bool> JSObject::preventExtensions(
   return true;
 }
 
-ExecutionStatus JSObject::seal(Handle<JSObject> selfHandle, Runtime *runtime) {
+ExecutionStatus JSObject::seal(Handle<JSObject> selfHandle, Runtime &runtime) {
   CallResult<bool> statusRes = JSObject::preventExtensions(
       selfHandle, runtime, PropOpFlags().plusThrowOnError());
   if (LLVM_UNLIKELY(statusRes == ExecutionStatus::EXCEPTION)) {
@@ -2591,8 +2546,8 @@ ExecutionStatus JSObject::seal(Handle<JSObject> selfHandle, Runtime *runtime) {
     return ExecutionStatus::RETURNED;
 
   auto newClazz = HiddenClass::makeAllNonConfigurable(
-      runtime->makeHandle(selfHandle->clazz_), runtime);
-  selfHandle->clazz_.set(runtime, *newClazz, &runtime->getHeap());
+      runtime.makeHandle(selfHandle->clazz_), runtime);
+  selfHandle->clazz_.setNonNull(runtime, *newClazz, runtime.getHeap());
 
   selfHandle->flags_.sealed = true;
 
@@ -2601,7 +2556,7 @@ ExecutionStatus JSObject::seal(Handle<JSObject> selfHandle, Runtime *runtime) {
 
 ExecutionStatus JSObject::freeze(
     Handle<JSObject> selfHandle,
-    Runtime *runtime) {
+    Runtime &runtime) {
   CallResult<bool> statusRes = JSObject::preventExtensions(
       selfHandle, runtime, PropOpFlags().plusThrowOnError());
   if (LLVM_UNLIKELY(statusRes == ExecutionStatus::EXCEPTION)) {
@@ -2616,8 +2571,8 @@ ExecutionStatus JSObject::freeze(
     return ExecutionStatus::RETURNED;
 
   auto newClazz = HiddenClass::makeAllReadOnly(
-      runtime->makeHandle(selfHandle->clazz_), runtime);
-  selfHandle->clazz_.set(runtime, *newClazz, &runtime->getHeap());
+      runtime.makeHandle(selfHandle->clazz_), runtime);
+  selfHandle->clazz_.setNonNull(runtime, *newClazz, runtime.getHeap());
 
   selfHandle->flags_.frozen = true;
   selfHandle->flags_.sealed = true;
@@ -2627,38 +2582,38 @@ ExecutionStatus JSObject::freeze(
 
 void JSObject::updatePropertyFlagsWithoutTransitions(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     PropertyFlags flagsToClear,
     PropertyFlags flagsToSet,
     OptValue<llvh::ArrayRef<SymbolID>> props) {
   auto newClazz = HiddenClass::updatePropertyFlagsWithoutTransitions(
-      runtime->makeHandle(selfHandle->clazz_),
+      runtime.makeHandle(selfHandle->clazz_),
       runtime,
       flagsToClear,
       flagsToSet,
       props);
-  selfHandle->clazz_.set(runtime, *newClazz, &runtime->getHeap());
+  selfHandle->clazz_.setNonNull(runtime, *newClazz, runtime.getHeap());
 }
 
 CallResult<bool> JSObject::isExtensible(
     PseudoHandle<JSObject> self,
-    Runtime *runtime) {
+    Runtime &runtime) {
   if (LLVM_UNLIKELY(self->isProxyObject())) {
-    return JSProxy::isExtensible(runtime->makeHandle(std::move(self)), runtime);
+    return JSProxy::isExtensible(runtime.makeHandle(std::move(self)), runtime);
   }
   return self->isExtensible();
 }
 
-bool JSObject::isSealed(PseudoHandle<JSObject> self, Runtime *runtime) {
+bool JSObject::isSealed(PseudoHandle<JSObject> self, Runtime &runtime) {
   if (self->flags_.sealed)
     return true;
   if (!self->flags_.noExtend)
     return false;
 
-  auto selfHandle = runtime->makeHandle(std::move(self));
+  auto selfHandle = runtime.makeHandle(std::move(self));
 
   if (!HiddenClass::areAllNonConfigurable(
-          runtime->makeHandle(selfHandle->clazz_), runtime)) {
+          runtime.makeHandle(selfHandle->clazz_), runtime)) {
     return false;
   }
 
@@ -2674,16 +2629,16 @@ bool JSObject::isSealed(PseudoHandle<JSObject> self, Runtime *runtime) {
   return true;
 }
 
-bool JSObject::isFrozen(PseudoHandle<JSObject> self, Runtime *runtime) {
+bool JSObject::isFrozen(PseudoHandle<JSObject> self, Runtime &runtime) {
   if (self->flags_.frozen)
     return true;
   if (!self->flags_.noExtend)
     return false;
 
-  auto selfHandle = runtime->makeHandle(std::move(self));
+  auto selfHandle = runtime.makeHandle(std::move(self));
 
   if (!HiddenClass::areAllReadOnly(
-          runtime->makeHandle(selfHandle->clazz_), runtime)) {
+          runtime.makeHandle(selfHandle->clazz_), runtime)) {
     return false;
   }
 
@@ -2702,7 +2657,7 @@ bool JSObject::isFrozen(PseudoHandle<JSObject> self, Runtime *runtime) {
 
 CallResult<bool> JSObject::addOwnProperty(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     DefinePropertyFlags dpFlags,
     Handle<> valueOrAccessor,
@@ -2710,9 +2665,9 @@ CallResult<bool> JSObject::addOwnProperty(
   /// Can we add more properties?
   if (!selfHandle->isExtensible() && !opFlags.getInternalForce()) {
     if (opFlags.getThrowOnError()) {
-      return runtime->raiseTypeError(
+      return runtime.raiseTypeError(
           TwineChar16("Cannot add new property '") +
-          runtime->getIdentifierTable().getStringViewForDev(runtime, name) +
+          runtime.getIdentifierTable().getStringViewForDev(runtime, name) +
           "'");
     }
     return false;
@@ -2747,7 +2702,7 @@ CallResult<bool> JSObject::addOwnProperty(
 
 ExecutionStatus JSObject::addOwnPropertyImpl(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     PropertyFlags propertyFlags,
     Handle<> valueOrAccessor) {
@@ -2758,11 +2713,11 @@ ExecutionStatus JSObject::addOwnPropertyImpl(
   // TODO: if we check for OOM here in the future, we must undo the slot
   // allocation.
   auto addResult = HiddenClass::addProperty(
-      runtime->makeHandle(selfHandle->clazz_), runtime, name, propertyFlags);
+      runtime.makeHandle(selfHandle->clazz_), runtime, name, propertyFlags);
   if (LLVM_UNLIKELY(addResult == ExecutionStatus::EXCEPTION)) {
     return ExecutionStatus::EXCEPTION;
   }
-  selfHandle->clazz_.set(runtime, *addResult->first, &runtime->getHeap());
+  selfHandle->clazz_.setNonNull(runtime, *addResult->first, runtime.getHeap());
 
   allocateNewSlotStorage(
       selfHandle, runtime, addResult->second, valueOrAccessor);
@@ -2777,7 +2732,7 @@ ExecutionStatus JSObject::addOwnPropertyImpl(
 
 CallResult<bool> JSObject::updateOwnProperty(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     HiddenClass::PropertyPos propertyPos,
     NamedPropertyDescriptor desc,
@@ -2801,11 +2756,11 @@ CallResult<bool> JSObject::updateOwnProperty(
   if (updateStatus->second != desc.flags) {
     desc.flags = updateStatus->second;
     auto newClazz = HiddenClass::updateProperty(
-        runtime->makeHandle(selfHandle->clazz_),
+        runtime.makeHandle(selfHandle->clazz_),
         runtime,
         propertyPos,
         desc.flags);
-    selfHandle->clazz_.set(runtime, *newClazz, &runtime->getHeap());
+    selfHandle->clazz_.setNonNull(runtime, *newClazz, runtime.getHeap());
   }
 
   if (updateStatus->first == PropertyUpdateStatus::done)
@@ -2840,7 +2795,7 @@ CallResult<bool> JSObject::updateOwnProperty(
 
 CallResult<std::pair<JSObject::PropertyUpdateStatus, PropertyFlags>>
 JSObject::checkPropertyUpdate(
-    Runtime *runtime,
+    Runtime &runtime,
     const PropertyFlags currentFlags,
     DefinePropertyFlags dpFlags,
     const HermesValue curValueOrAccessor,
@@ -2893,7 +2848,7 @@ JSObject::checkPropertyUpdate(
     // Trying to change non-configurable to configurable?
     if (dpFlags.configurable) {
       if (opFlags.getThrowOnError()) {
-        return runtime->raiseTypeError(
+        return runtime.raiseTypeError(
             "property is not configurable"); // TODO: better message.
       }
       return std::make_pair(PropertyUpdateStatus::failed, PropertyFlags{});
@@ -2903,7 +2858,7 @@ JSObject::checkPropertyUpdate(
     if (dpFlags.setEnumerable &&
         dpFlags.enumerable != currentFlags.enumerable) {
       if (opFlags.getThrowOnError()) {
-        return runtime->raiseTypeError(
+        return runtime.raiseTypeError(
             "property is not configurable"); // TODO: better message.
       }
       return std::make_pair(PropertyUpdateStatus::failed, PropertyFlags{});
@@ -2923,7 +2878,7 @@ JSObject::checkPropertyUpdate(
   else if (currentFlags.accessor != dpFlags.isAccessor()) {
     if (!currentFlags.configurable) {
       if (opFlags.getThrowOnError()) {
-        return runtime->raiseTypeError(
+        return runtime.raiseTypeError(
             "property is not configurable"); // TODO: better message.
       }
       return std::make_pair(PropertyUpdateStatus::failed, PropertyFlags{});
@@ -2949,7 +2904,7 @@ JSObject::checkPropertyUpdate(
         // If the current property is not writable, but the new one is.
         if (dpFlags.writable) {
           if (opFlags.getThrowOnError()) {
-            return runtime->raiseTypeError(
+            return runtime.raiseTypeError(
                 "property is not configurable"); // TODO: better message.
           }
           return std::make_pair(PropertyUpdateStatus::failed, PropertyFlags{});
@@ -2959,7 +2914,7 @@ JSObject::checkPropertyUpdate(
         if (dpFlags.setValue &&
             !isSameValue(curValueOrAccessor, valueOrAccessor.get())) {
           if (opFlags.getThrowOnError()) {
-            return runtime->raiseTypeError(
+            return runtime.raiseTypeError(
                 "property is not writable"); // TODO: better message.
           }
           return std::make_pair(PropertyUpdateStatus::failed, PropertyFlags{});
@@ -2977,7 +2932,7 @@ JSObject::checkPropertyUpdate(
       if ((dpFlags.setGetter && newAccessor->getter != curAccessor->getter) ||
           (dpFlags.setSetter && newAccessor->setter != curAccessor->setter)) {
         if (opFlags.getThrowOnError()) {
-          return runtime->raiseTypeError(
+          return runtime.raiseTypeError(
               "property is not configurable"); // TODO: better message.
         }
         return std::make_pair(PropertyUpdateStatus::failed, PropertyFlags{});
@@ -2986,11 +2941,9 @@ JSObject::checkPropertyUpdate(
 
     // If not setting the getter or the setter, re-use the current one.
     if (!dpFlags.setGetter)
-      newAccessor->getter.set(
-          runtime, curAccessor->getter, &runtime->getHeap());
+      newAccessor->getter.set(runtime, curAccessor->getter, runtime.getHeap());
     if (!dpFlags.setSetter)
-      newAccessor->setter.set(
-          runtime, curAccessor->setter, &runtime->getHeap());
+      newAccessor->setter.set(runtime, curAccessor->setter, runtime.getHeap());
   }
 
   // 8.12.9 [12] For each attribute field of Desc that is present, set the
@@ -3015,7 +2968,7 @@ JSObject::checkPropertyUpdate(
 
 CallResult<bool> JSObject::internalSetter(
     Handle<JSObject> selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     SymbolID name,
     NamedPropertyDescriptor /*desc*/,
     Handle<> value,
@@ -3034,10 +2987,10 @@ namespace {
 
 /// Helper function to add all the property names of an object to an
 /// array, starting at the given index. Only enumerable properties are
-/// incluced. Returns the index after the last property added, but...
+/// included. Returns the index after the last property added, but...
 CallResult<uint32_t> appendAllPropertyNames(
     Handle<JSObject> obj,
-    Runtime *runtime,
+    Runtime &runtime,
     MutableHandle<BigStorage> &arr,
     uint32_t beginIndex) {
   uint32_t size = beginIndex;
@@ -3066,7 +3019,7 @@ CallResult<uint32_t> appendAllPropertyNames(
     auto marker = gcScope.createMarker();
     for (unsigned i = 0, e = enumerableProps->getEndIndex(); i < e; ++i) {
       gcScope.flushToMarker(marker);
-      prop = enumerableProps->at(runtime, i);
+      prop = enumerableProps->at(runtime, i).unboxToHV(runtime);
       if (!needDedup) {
         // If no dedup is needed, add it directly.
         if (LLVM_UNLIKELY(
@@ -3082,7 +3035,7 @@ CallResult<uint32_t> appendAllPropertyNames(
       bool dupFound = false;
       if (prop->isNumber()) {
         for (uint32_t j = beginIndex; j < size && !dupFound; ++j) {
-          HermesValue val = arr->at(j);
+          HermesValue val = arr->at(runtime, j);
           if (val.isNumber()) {
             dupFound = val.getNumber() == prop->getNumber();
           } else {
@@ -3095,7 +3048,7 @@ CallResult<uint32_t> appendAllPropertyNames(
         }
       } else {
         for (uint32_t j = beginIndex; j < size && !dupFound; ++j) {
-          HermesValue val = arr->at(j);
+          HermesValue val = arr->at(runtime, j);
           if (val.isNumber()) {
             // val is number, prop is string.
             auto propNum = toArrayIndex(StringPrimitive::createStringView(
@@ -3135,7 +3088,7 @@ CallResult<uint32_t> appendAllPropertyNames(
 /// \param[out] arr The array where the classes will be appended. This
 /// array is cleared if any object is unsuitable for caching.
 ExecutionStatus setProtoClasses(
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> obj,
     MutableHandle<BigStorage> &arr) {
   // Layout of a JSArray stored in the for-in cache:
@@ -3180,13 +3133,13 @@ ExecutionStatus setProtoClasses(
 /// \return The index after the terminating null if everything matches,
 /// otherwise 0.
 uint32_t matchesProtoClasses(
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> obj,
     Handle<BigStorage> arr) {
   MutableHandle<JSObject> head(runtime, obj->getParent(runtime));
   uint32_t i = 0;
   while (head.get()) {
-    HermesValue protoCls = arr->at(i++);
+    HermesValue protoCls = arr->at(runtime, i++);
     if (protoCls.isNull() || protoCls.getObject() != head->getClass(runtime) ||
         head->isProxyObject()) {
       return 0;
@@ -3194,7 +3147,7 @@ uint32_t matchesProtoClasses(
     head = head->getParent(runtime);
   }
   // The chains must both end at the same point.
-  if (head || !arr->at(i++).isNull()) {
+  if (head || !arr->at(runtime, i++).isNull()) {
     return 0;
   }
   assert(i > 0 && "success should be positive");
@@ -3204,7 +3157,7 @@ uint32_t matchesProtoClasses(
 } // namespace
 
 CallResult<Handle<BigStorage>> getForInPropertyNames(
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<JSObject> obj,
     uint32_t &beginIndex,
     uint32_t &endIndex) {
@@ -3218,7 +3171,7 @@ CallResult<Handle<BigStorage>> getForInPropertyNames(
       beginIndex = matchesProtoClasses(runtime, obj, arr);
       if (beginIndex) {
         // Cache is valid for this object, so use it.
-        endIndex = arr->size();
+        endIndex = arr->size(runtime);
         return arr;
       }
       // Invalid for this object. We choose to clear the cache since the
@@ -3241,7 +3194,7 @@ CallResult<Handle<BigStorage>> getForInPropertyNames(
   if (setProtoClasses(runtime, obj, arr) == ExecutionStatus::EXCEPTION) {
     return ExecutionStatus::EXCEPTION;
   }
-  beginIndex = arr->size();
+  beginIndex = arr->size(runtime);
   // If obj or any of its prototypes are unsuitable for caching, then
   // beginIndex is 0 and we return an array with only the property names.
   bool canCache = beginIndex;

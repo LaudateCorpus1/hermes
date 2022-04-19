@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -372,13 +372,19 @@ static void genGetters() {
 }
 
 static void genConvert() {
-  llvh::outs()
-      << "pub unsafe fn cvt_node_ptr(cvt: &Converter, n: NodePtr) -> ast::NodePtr {\n";
+  llvh::outs() << "pub unsafe fn cvt_node_ptr<'parser, 'gc>(\n"
+                  "  cvt: &mut Converter<'parser>, \n"
+                  "  gc: &'gc ast::GCLock, \n"
+                  "  n: NodePtr) -> &'gc ast::Node<'gc> {\n";
   llvh::outs() << "    let nr = n.as_ref();\n"
-                  "    let range = cvt.smrange(nr.source_range);\n"
+                  "    let range = ast::SourceRange {\n"
+                  "        file: cvt.file_id,\n"
+                  "        start: cvt.cvt_smloc(nr.source_range.start),\n"
+                  "        end: ast::SourceLoc::invalid(),\n"
+                  "    };\n"
                   "\n";
 
-  llvh::outs() << "    match nr.kind {\n";
+  llvh::outs() << "    let res = match nr.kind {\n";
 
   auto genStruct = [](const TreeClass &cls) {
     if (cls.sentinel != SentinelType::None)
@@ -386,15 +392,12 @@ static void genConvert() {
     if (strncmp(cls.name.c_str(), "Cover", 5) == 0)
       return;
 
-    llvh::outs() << "        NodeKind::" << cls.name
-                 << " => ast::NodePtr::new(\n"
-                    "            ast::Node {\n"
-                    "                range,\n"
-                    "                kind: ast::NodeKind::"
-                 << cls.name << " {\n";
+    llvh::outs() << "        NodeKind::" << cls.name << " => {\n";
 
+    // Declare all the fields as local vars to avoid multiple borrows
+    // of the context.
     for (const auto &fld : cls.fields) {
-      llvh::outs() << "                    " << fld.rustName() << ": ";
+      llvh::outs() << "          let " << fld.rustName() << " = ";
       bool close = true;
       switch (fld.type) {
         case FieldType::NodeString:
@@ -417,7 +420,8 @@ static void genConvert() {
               (cls.name == "AssignmentExpression" && fld.name == "operator"))
             llvh::outs() << "cvt_enum(";
           else
-            llvh::outs() << "cvt_label" << (fld.optional ? "_opt" : "") << "(";
+            llvh::outs() << "cvt.cvt_label" << (fld.optional ? "_opt" : "")
+                         << "(gc, ";
           break;
         case FieldType::Boolean:
         case FieldType::Number:
@@ -426,22 +430,34 @@ static void genConvert() {
           break;
         case FieldType::NodePtr:
           llvh::outs() << "cvt_node_ptr" << (fld.optional ? "_opt" : "")
-                       << "(cvt, ";
+                       << "(cvt, gc, ";
           break;
         case FieldType::NodeList:
           llvh::outs() << "cvt_node_list" << (fld.optional ? "_opt" : "")
-                       << "(cvt, ";
+                       << "(cvt, gc, ";
           break;
       }
       llvh::outs() << "hermes_get_" << cls.name << "_" << fld.name << "(n)";
       if (close)
         llvh::outs() << ")";
-      llvh::outs() << ",\n";
+      llvh::outs() << ";\n";
     }
 
-    llvh::outs() << "                },\n"
-                    "            }\n"
-                    "        ),\n";
+    llvh::outs()
+        << "          let mut template = ast::template::" << cls.name << " {\n"
+        << "              metadata: ast::TemplateMetadata {range, ..Default::default()},\n";
+
+    for (const auto &fld : cls.fields) {
+      // Shorthand initialization of each field.
+      llvh::outs() << "                  " << fld.rustName() << ",\n";
+    }
+
+    llvh::outs()
+        << "          };\n" // kind
+           "          template.metadata.range.end = cvt.cvt_smloc(nr.source_range.end.pred());\n"
+        << "          ast::builder::" << cls.name
+        << "::build_template(gc, template)\n"
+        << "        }\n"; // match block
   };
 
   for (const auto &cls : treeClasses_) {
@@ -450,8 +466,17 @@ static void genConvert() {
     genStruct(cls);
   }
 
-  llvh::outs() << "        _ => panic!(\"Invalid node kind\")\n"
-                  "    }\n";
+  llvh::outs()
+      << "        _ => {\n"
+         "          cvt.report_invalid_node(gc, n, range);\n"
+         "          let template = ast::template::Empty {\n"
+         "            metadata: ast::TemplateMetadata {range, ..Default::default()}\n"
+         "          };\n"
+         "          ast::builder::Empty::build_template(gc, template)\n"
+         "        }\n"
+
+         "    };\n\n";
+  llvh::outs() << "    res\n";
   llvh::outs() << "}\n";
 }
 
@@ -467,11 +492,16 @@ static void genEnum() {
 }
 
 int main(int argc, char **argv) {
+  if (argc != 2) {
+    llvh::errs() << "syntax: " << argv[0] << " ffi|cvt\n";
+    return 1;
+  }
+
   initClasses();
 
   llvh::outs()
       << "/*\n"
-         " * Copyright (c) Facebook, Inc. and its affiliates.\n"
+         " * Copyright (c) Meta Platforms, Inc. and affiliates.\n"
          " *\n"
          " * This source code is licensed under the MIT license found in the\n"
          " * LICENSE file in the root directory of this source tree.\n"
@@ -480,14 +510,22 @@ int main(int argc, char **argv) {
                   "generated by Hermes rustgen\n";
   llvh::outs() << "// DO NOT EDIT\n\n";
 
-  llvh::outs() << "use super::{node::*, convert::*};\n"
-                  "use crate::ast;\n\n";
+  if (llvh::StringRef(argv[1]) == "ffi") {
+    llvh::outs() << "use super::node::*;\n\n";
 
-  genEnum();
-  llvh::outs() << "\n";
-  genGetters();
-  llvh::outs() << "\n";
-  genConvert();
+    genEnum();
+    llvh::outs() << "\n";
+    genGetters();
+  } else if (llvh::StringRef(argv[1]) == "cvt") {
+    llvh::outs() << "use hermes::parser::*;\n"
+                    "use super::convert::*;\n"
+                    "use crate::ast;\n\n";
+
+    genConvert();
+  } else {
+    llvh::errs() << "Invalid command\n";
+    return 1;
+  }
 
   return 0;
 }

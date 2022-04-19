@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -29,7 +29,7 @@ struct DummyObject final : public GCCell {
   GCHermesValue hvEmpty;
   GCHermesValue hvNative;
   GCHermesValue hvNull;
-  WeakRef<DummyObject> weak;
+  llvh::Optional<WeakRef<DummyObject>> weak;
   uint32_t externalBytes{};
   uint32_t extraBytes{};
 
@@ -38,17 +38,17 @@ struct DummyObject final : public GCCell {
   using MarkWeakCallback = std::function<VTable::MarkWeakCallback>;
   std::unique_ptr<MarkWeakCallback> markWeakCallback;
 
-  DummyObject(GC *gc);
+  DummyObject(GC &gc);
 
-  void acquireExtMem(GC *gc, uint32_t sz);
-  void releaseExtMem(GC *gc);
-  void setPointer(GC *gc, DummyObject *obj);
+  void acquireExtMem(GC &gc, uint32_t sz);
+  void releaseExtMem(GC &gc);
+  void setPointer(GC &gc, DummyObject *obj);
 
-  static DummyObject *create(GC *gc);
-  static DummyObject *createLongLived(GC *gc);
+  static DummyObject *create(GC &gc);
+  static DummyObject *createLongLived(GC &gc);
+  static constexpr CellKind getCellKind();
   static bool classof(const GCCell *cell);
-  static void _finalizeImpl(GCCell *cell, GC *);
-  static gcheapsize_t _externalMemorySizeImpl(const GCCell *cell);
+  static void _finalizeImpl(GCCell *cell, GC &);
   static size_t _mallocSizeImpl(GCCell *cell);
   static void _markWeakImpl(GCCell *cell, WeakRefAcceptor &acceptor);
 };

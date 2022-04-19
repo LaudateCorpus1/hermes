@@ -1,9 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-cmake_minimum_required(VERSION 3.7.0)
+cmake_minimum_required(VERSION 3.13.0)
 
 # Set the VERSION variables based on the project command
 if (POLICY CMP0048)
@@ -35,15 +35,6 @@ if(POLICY CMP0022)
   cmake_policy(SET CMP0022 NEW)
 endif()
 
-# Don't complain about mixing plain and keyword target_link_libraries commands.
-# Keyword style is when you specify whether library symbols are re-exported,
-# e.g. target_link_libraries(target PRIVATE lib).
-# LLVM currently uses plain-style target_link_libraries calls so we must
-# allow mixing.
-if (POLICY CMP0023)
-  cmake_policy(SET CMP0023 OLD)
-endif()
-
 # Allow reading the LOCATION property of a target to determine the eventual
 # location of build targets. This is needed when building the debugging symbols
 # bundles for Apple platforms.
@@ -71,10 +62,8 @@ endif()
 # - npm/package.json
 # - hermes-engine.podspec
 project(Hermes
-        VERSION 0.8.0
+        VERSION 0.11.0
         LANGUAGES C CXX)
-# Optional suffix like "-rc3"
-set(VERSION_SUFFIX "")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules/")
 
@@ -83,7 +72,11 @@ set(LLVH_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/llvh)
 include(Hermes)
 include(Lit)
 
-set(HERMES_RELEASE_VERSION ${PROJECT_VERSION}${VERSION_SUFFIX})
+# This is not a cache variable so that it is recomputed when the project
+# version is updated.
+if(NOT DEFINED HERMES_RELEASE_VERSION)
+  set(HERMES_RELEASE_VERSION ${PROJECT_VERSION})
+endif()
 
 include(FindPythonInterp)
 if (NOT PYTHONINTERP_FOUND)
@@ -101,7 +94,7 @@ set(HERMES_IS_MOBILE_BUILD ${HERMES_IS_ANDROID} CACHE BOOL
 
 set(HERMESVM_GCKIND HADES
   CACHE STRING
-  "HermesVM GC type: either NONCONTIG_GENERATIONAL, MALLOC, or HADES")
+  "HermesVM GC type: either MALLOC or HADES")
 
 # Hermes VM opcode stats profiling
 set(HERMESVM_PROFILER_OPCODE OFF CACHE BOOL
@@ -119,9 +112,6 @@ set(HERMESVM_PROFILER_JSFUNCTION OFF CACHE BOOL
 set(HERMESVM_PROFILER_NATIVECALL OFF CACHE BOOL
   "Enable native call profiling in hermes VM")
 
-set(HERMESVM_SERIALIZE OFF CACHE BOOL
-  "Enable heap serialization and deserialization")
-
 CHECK_CXX_SOURCE_COMPILES(
         "int main() { void *p = &&label; goto *p; label: return 0; }"
         HAVE_COMPUTED_GOTO)
@@ -137,6 +127,15 @@ set(HERMESVM_INDIRECT_THREADING ${DEFAULT_INTERPRETER_THREADING} CACHE BOOL
 set(HERMESVM_ALLOW_COMPRESSED_POINTERS ON CACHE BOOL
   "Enable compressed pointers. If this is on and the target is a 64-bit build, compressed pointers will be used.")
 
+if(APPLE OR WIN32)
+    set(DEFAULT_CONTIGUOUS_HEAP OFF)
+else()
+    set(DEFAULT_CONTIGUOUS_HEAP ON)
+endif()
+
+set(HERMESVM_ALLOW_CONTIGUOUS_HEAP ${DEFAULT_CONTIGUOUS_HEAP} CACHE BOOL
+  "If this is on and compressed pointers are used, the heap will be allocated in a contiguous 4GB region.")
+
 set(HERMESVM_ALLOW_HUGE_PAGES OFF CACHE BOOL
         "Enable huge pages to back the GC managed heap. Only useful on Linux.")
 
@@ -148,6 +147,9 @@ set(HERMESVM_HEAP_SEGMENT_SIZE_KB 4096
 
 set(HERMESVM_ALLOW_CONCURRENT_GC ON CACHE BOOL
         "Enable concurrency in the GC for 64-bit builds.")
+
+set(HERMESVM_ALLOW_INLINE_ASM ON CACHE BOOL
+        "Allow the use of inline assembly in VM code.")
 
 set(HERMESVM_API_TRACE_ANDROID_REPLAY OFF CACHE BOOL
   "Simulate Android config on Linux in API tracing.")
@@ -176,7 +178,7 @@ set(HERMES_ENABLE_TRACE_PC_GUARD OFF CACHE BOOL
   "Enable -fsanitize-coverage=trace-pc-guard")
 
 set(HERMES_ENABLE_CODE_COVERAGE OFF CACHE BOOL
-  "Enable code coverage to be generated when running binaries")
+  "Enables code coverage to be collected from binaries. Coverage output will be placed in a subdirectory called \"coverage\" of the build directory.")
 
 set(HERMES_ENABLE_LIBFUZZER OFF CACHE BOOL
   "Enable libfuzzer")
@@ -208,11 +210,10 @@ set(HERMES_STATIC_LINK OFF CACHE BOOL
 set(HERMES_USE_STATIC_ICU OFF CACHE BOOL
   "Force static linking of ICU. May only work on GNU/Linux.")
 
-set(HERMES_ENABLE_DEBUGGER_DEFAULT OFF)
-if (NOT HERMES_IS_MOBILE_BUILD)
-    set(HERMES_ENABLE_DEBUGGER_DEFAULT ON)
-endif()
-set(HERMES_ENABLE_DEBUGGER ${HERMES_ENABLE_DEBUGGER_DEFAULT} CACHE BOOL
+set(HERMES_UNICODE_LITE OFF CACHE BOOL
+  "Enable to use internal no-op unicode functionality instead of relying on underlying system libraries")
+
+set(HERMES_ENABLE_DEBUGGER ON CACHE BOOL
   "Build with debugger support")
 
 set(HERMES_ENABLE_IR_INSTRUMENTATION OFF CACHE BOOL
@@ -268,21 +269,10 @@ set(HERMES_BUILD_NODE_HERMES OFF CACHE BOOL "Whether to build node-hermes")
 
 set(HERMES_BUILD_LEAN_LIBHERMES OFF CACHE BOOL "Exclude the Hermes compiler from libhermes.")
 
+set(HERMES_BUILD_SHARED_JSI OFF CACHE BOOL "Build JSI as a shared library.")
+
 if (HERMES_IS_ANDROID)
-  set(HERMES_IS_MOBILE_BUILD TRUE)
-
   add_definitions(-DHERMES_PLATFORM_UNICODE=HERMES_PLATFORM_UNICODE_JAVA)
-
-  # The toolchain passes -Wa,--noexecstack which is valid for compiling
-  # but not for linking. Just ignore it.
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-command-line-argument")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-command-line-argument")
-
-  # JS developers aren't VM developers. Give them a faster build.
-  set(CMAKE_CXX_FLAGS_DEBUG "-O3 -g -DNDEBUG")
-
-  # The release build can focus on size.
-  set(CMAKE_CXX_FLAGS_RELEASE "-Os -DNDEBUG")
 endif()
 
 if(HERMES_BUILD_APPLE_DSYM)
@@ -299,27 +289,37 @@ if ((NOT GENERATOR_IS_MULTI_CONFIG) AND CMAKE_BUILD_TYPE STREQUAL "")
 endif()
 
 if (HERMES_STATIC_LINK)
-  set(CMAKE_EXE_LINKER_FLAGS "-static")
+  append("-static" CMAKE_EXE_LINKER_FLAGS)
   set(HERMES_USE_STATIC_ICU ON)
   set(CMAKE_FIND_LIBRARY_SUFFIXES "${CMAKE_STATIC_LIBRARY_SUFFIX}")
 endif()
 
-# Check if the linker supports --gc-sections
+# Check if the linker supports --gc-sections and ICF.
 # We can't simply CHECK_CXX_COMPILER_FLAG("-Wl,--gc-sections" ..) because CMake
 # will compile and link separately and only passes the flag during compilation.
+# TODO: Use check_linker_flag once we have CMake 3.18.
 set(OLD_CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
-set(CMAKE_EXE_LINKER_FLAGS "--gc-sections")
+set(CMAKE_EXE_LINKER_FLAGS "${OLD_CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections")
 CHECK_CXX_COMPILER_FLAG("" HAVE_GC_SECTIONS)
+set(CMAKE_EXE_LINKER_FLAGS "${OLD_CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=safe")
+CHECK_CXX_COMPILER_FLAG("" HAVE_ICF)
 set(CMAKE_EXE_LINKER_FLAGS "${OLD_CMAKE_EXE_LINKER_FLAGS}")
 
 if(HAVE_GC_SECTIONS)
-  set(OPTIONAL_GC_SECTIONS "-Wl,--gc-sections")
-else()
-  set(OPTIONAL_GC_SECTIONS "")
+  add_flag_if_supported("-ffunction-sections" FUNCTION_SECTIONS)
+  add_flag_if_supported("-fdata-sections" DATA_SECTIONS)
+  list(APPEND HERMES_EXTRA_LINKER_FLAGS "LINKER:--gc-sections")
+endif()
+
+if(HAVE_ICF)
+  add_flag_if_supported("-faddrsig" ADDRSIG)
+  list(APPEND HERMES_EXTRA_LINKER_FLAGS "LINKER:--icf=safe")
 endif()
 
 # Make the HERMES_RELEASE_VERSION accessible for version printing in C++.
-add_definitions(-DHERMES_RELEASE_VERSION="${HERMES_RELEASE_VERSION}")
+if(HERMES_RELEASE_VERSION)
+    add_definitions(-DHERMES_RELEASE_VERSION="${HERMES_RELEASE_VERSION}")
+endif()
 
 if(HERMES_ENABLE_IR_INSTRUMENTATION)
     add_definitions(-DHERMES_ENABLE_IR_INSTRUMENTATION)
@@ -344,14 +344,14 @@ if(HERMESVM_PROFILER_NATIVECALL)
     add_definitions(-DHERMESVM_PROFILER_NATIVECALL)
     set(HERMES_PROFILER_MODE_IN_LIT_TEST "EXTERN")
 endif()
-if(HERMESVM_SERIALIZE)
-  add_definitions(-DHERMESVM_SERIALIZE)
-endif()
 if(HERMESVM_INDIRECT_THREADING)
     add_definitions(-DHERMESVM_INDIRECT_THREADING)
 endif()
 if(HERMESVM_ALLOW_COMPRESSED_POINTERS)
     add_definitions(-DHERMESVM_ALLOW_COMPRESSED_POINTERS)
+endif()
+if(HERMESVM_ALLOW_CONTIGUOUS_HEAP)
+    add_definitions(-DHERMESVM_ALLOW_CONTIGUOUS_HEAP)
 endif()
 if(HERMESVM_ALLOW_HUGE_PAGES)
     add_definitions(-DHERMESVM_ALLOW_HUGE_PAGES)
@@ -359,6 +359,9 @@ endif()
 add_definitions(-DHERMESVM_HEAP_SEGMENT_SIZE_KB=${HERMESVM_HEAP_SEGMENT_SIZE_KB})
 if(HERMESVM_ALLOW_CONCURRENT_GC)
     add_definitions(-DHERMESVM_ALLOW_CONCURRENT_GC)
+endif()
+if(HERMESVM_ALLOW_INLINE_ASM)
+    add_definitions(-DHERMESVM_ALLOW_INLINE_ASM)
 endif()
 if(HERMESVM_API_TRACE_ANDROID_REPLAY)
     add_definitions(-DHERMESVM_API_TRACE_ANDROID_REPLAY)
@@ -410,11 +413,7 @@ if (NOT (ANDROID_LINUX_PERF_PATH STREQUAL ""))
 endif()
 
 if (HERMES_ENABLE_INTL)
-  if (HERMES_IS_ANDROID)
-    add_definitions(-DHERMES_PLATFORM_INTL=HERMES_PLATFORM_INTL_ANDROID)
-  else()
-    add_definitions(-DHERMES_PLATFORM_INTL=HERMES_PLATFORM_INTL_DUMMY)
-  endif()
+  add_definitions(-DHERMES_ENABLE_INTL)
 endif()
 
 if (HERMES_ENABLE_WERROR)
@@ -437,13 +436,6 @@ if ((NOT GENERATOR_IS_MULTI_CONFIG) AND (CMAKE_BUILD_TYPE STREQUAL Debug))
     set(HERMES_ASSUMED_BUILD_MODE_IN_LIT_TEST "dbg")
 else()
     set(HERMES_ASSUMED_BUILD_MODE_IN_LIT_TEST "opt")
-endif()
-
-if (NOT (GENERATOR_IS_MULTI_CONFIG OR CMAKE_BUILD_TYPE STREQUAL Debug OR CMAKE_COMPILER_IS_GNUCXX))
-    # Enable LTO if we are not multi config generator and not a DEBUG build
-    # and not GCC
-    # GCC currently fails to link Hermes with LTO (see t16557748)
-    option(HERMES_ENABLE_LTO "Build Hermes with LTO" ON)
 endif()
 
 if (GCC_COMPATIBLE)
@@ -469,24 +461,21 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Attempt to use system ICU first, if none specified.
-# Don't need ICU on Apple systems.
-if (APPLE)
-  set(ICU_FOUND 1)
-  set(ICU_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/external/icu_decls)
-  set(ICU_LIBRARIES
-    icucore
-  )
-  include_directories(${ICU_INCLUDE_DIRS})
-elseif(EMSCRIPTEN)
-  # Just ignore ICU on Emiscripten. For now.
+# Don't need ICU on Apple, Emscripten, and Android.
+if (APPLE OR EMSCRIPTEN OR HERMES_IS_ANDROID)
   set(ICU_FOUND 1)
 endif()
 
 if (NOT ICU_FOUND)
-  # Workaround: FindICU does not correctly recognize ICU include dir until
-  # CMake 3.8.0.  https://github.com/Kitware/CMake/commit/cdf7e5d8
-  list(APPEND icu_include_suffixes "include")
-
+  if (NOT ICU_ROOT)
+    set(FB_ICU_ROOT_A "/mnt/gvfs/third-party2/icu/4e8f3e00e1c7d7315fd006903a9ff7f073dfc02b/53.1/gcc-5-glibc-2.23/9bc6787")
+    set(FB_ICU_ROOT_B "/mnt/gvfs/third-party2/icu/4e8f3e00e1c7d7315fd006903a9ff7f073dfc02b/53.1/gcc-4.8.1-glibc-2.17/c3f970a/")
+    if(EXISTS ${FB_ICU_ROOT_A})
+      set(ICU_ROOT ${FB_ICU_ROOT_A})
+    elseif(EXISTS ${FB_ICU_ROOT_B})
+      set(ICU_ROOT ${FB_ICU_ROOT_B})
+    endif()
+  endif()
   set(CMAKE_FIND_LIBRARY_SUFFIXES_OLD "${CMAKE_FIND_LIBRARY_SUFFIXES}")
   if (HERMES_USE_STATIC_ICU)
     add_definitions(-DU_STATIC_IMPLEMENTATION)
@@ -527,7 +516,7 @@ if (NOT ICU_FOUND AND HERMES_ENABLE_WIN10_ICU_FALLBACK AND
 endif()
 
 # If we have no ICU, then error out.
-if (NOT HERMES_IS_ANDROID AND NOT ICU_FOUND)
+if (NOT ICU_FOUND)
   message(FATAL_ERROR "Unable to find ICU.")
 endif()
 
@@ -535,11 +524,11 @@ endif()
 # This adds the correct -rpath link flag as necessary.
 function(hermes_link_icu target_name)
   get_target_property(target_type ${target_name} TYPE)
-  target_link_libraries(${target_name} PRIVATE ${ICU_LIBRARIES})
+  target_link_libraries(${target_name} ${ICU_LIBRARIES})
 
   if (HERMES_USE_STATIC_ICU)
     if ((NOT EMSCRIPTEN) AND target_type MATCHES "EXECUTABLE|STATIC_LIBRARY")
-      target_link_libraries(${target_name} PRIVATE dl pthread)
+      target_link_libraries(${target_name} dl pthread)
     elseif(target_type MATCHES "MODULE_LIBRARY|SHARED_LIBRARY")
       message(WARNING "ICU cannot be statically linked against shared library target ${target_name}")
     endif()
@@ -555,8 +544,10 @@ endfunction()
 
 if (APPLE)
   find_library(CORE_FOUNDATION CoreFoundation)
+  find_library(FOUNDATION Foundation)
 else()
   set(CORE_FOUNDATION "")
+  set(FOUNDATION "")
 endif()
 
 if (HERMES_USE_FLOWPARSER)
@@ -578,12 +569,21 @@ if (HERMES_ENABLE_DEBUGGER)
   add_definitions(-DHERMES_ENABLE_DEBUGGER)
 endif()
 
-set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++14")
+set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++17")
 
 set(HERMES_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(HERMES_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
-if(EXISTS ${HERMES_SOURCE_DIR}/API/jsi)
+# JSI_DIR has always priority over other folders like FBSOURCE_DIR.
+# It's used by React Native when building Hermes from source so
+# the copy of JSI inside `react-native/ReactCommon/jsi` can be used.
+if(JSI_DIR)
+  if(EXISTS ${JSI_DIR})
+    set(HERMES_JSI_DIR ${JSI_DIR})
+  else()
+    message(FATAL_ERROR "You specified a JSI directory with -DJSI_DIR but JSI can't be found there.")
+  endif()
+elseif(EXISTS ${HERMES_SOURCE_DIR}/API/jsi)
   set(HERMES_JSI_DIR ${HERMES_SOURCE_DIR}/API/jsi)
 elseif(EXISTS ${FBSOURCE_DIR}/xplat/jsi)
   set(HERMES_JSI_DIR ${FBSOURCE_DIR}/xplat/jsi)
@@ -602,7 +602,6 @@ include_directories(
 include_directories(BEFORE
   ${CMAKE_CURRENT_BINARY_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/public
   ${CMAKE_CURRENT_SOURCE_DIR}/external/flowparser/include
   ${CMAKE_CURRENT_SOURCE_DIR}/external
   )
@@ -611,13 +610,12 @@ if(HERMES_IS_ANDROID)
   find_package(fbjni REQUIRED CONFIG)
 endif()
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_subdirectory(external/llvh)
 add_subdirectory(utils/hermes-lit)
-add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(public)
 add_subdirectory(external)
@@ -632,7 +630,10 @@ endif()
 # Make sure JSI is compiled with PIC
 set(save_CMAKE_POSITION_INDEPENDENT_CODE ${CMAKE_POSITION_INDEPENDENT_CODE})
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(save_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS ${HERMES_BUILD_SHARED_JSI})
 add_subdirectory(${HERMES_JSI_DIR}/jsi ${CMAKE_CURRENT_BINARY_DIR}/jsi)
+set(BUILD_SHARED_LIBS ${save_BUILD_SHARED_LIBS})
 set(CMAKE_POSITION_INDEPENDENT_CODE ${save_CMAKE_POSITION_INDEPENDENT_CODE})
 
 if (EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/facebook)
@@ -675,6 +676,7 @@ if(HERMES_ENABLE_TEST_SUITE)
     test_exec_root=${HERMES_BINARY_DIR}/test
     unittests_dir=${HERMES_BINARY_DIR}/unittests
     debugger_enabled=${HERMES_ENABLE_DEBUGGER}
+    intl_enabled=${HERMES_ENABLE_INTL}
     use_flowparser=${HERMES_USE_FLOWPARSER}
     hbc_deltaprep=${HERMES_TOOLS_OUTPUT_DIR}/hbc-deltaprep
     dependency_extractor=${HERMES_TOOLS_OUTPUT_DIR}/dependency-extractor
@@ -689,7 +691,6 @@ if(HERMES_ENABLE_TEST_SUITE)
     exception_on_oom_enabled=${HERMESVM_EXCEPTION_ON_OOM}
     node_hermes_enabled_flag=${HERMES_BUILD_NODE_HERMES}
     node-hermes=${HERMES_TOOLS_OUTPUT_DIR}/node-hermes
-    serialize_enabled=${HERMESVM_SERIALIZE}
     profiler=${HERMES_PROFILER_MODE_IN_LIT_TEST}
     gc=${HERMESVM_GCKIND}
     ubsan=${HERMES_ENABLE_UNDEFINED_BEHAVIOR_SANITIZER}
@@ -711,6 +712,7 @@ endif()
 # This is how github release files are built.
 
 set(HERMES_GITHUB_DIR ${HERMES_BINARY_DIR}/github)
+file(MAKE_DIRECTORY ${HERMES_GITHUB_DIR})
 string(TOLOWER ${CMAKE_SYSTEM_NAME} HERMES_GITHUB_SYSTEM_NAME)
 
 if(HERMES_ENABLE_TOOLS)

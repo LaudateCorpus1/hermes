@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -328,6 +328,8 @@ SKIP_LIST = [
     "test262/test/language/statements/async-function/early-errors-declaration-formals-body-duplicate.js",
     "test262/test/language/expressions/async-function/escaped-async.js",
     "test262/test/language/expressions/async-function/early-errors-expression-formals-body-duplicate.js",
+    # async with escape is a valid loop variable: TODO(T80014951)
+    "test262/test/language/statements/for-of/head-lhs-async-escaped.js",
     # let/const (block scope)
     "esprima/test_fixtures/declaration/let/",
     "esprima/test_fixtures/declaration/const/",
@@ -660,6 +662,8 @@ SKIP_LIST = [
     "test262/test/language/computed-property-names/class/",
     "test262/test/language/computed-property-names/to-name-side-effects/numbers-class.js",
     "test262/test/language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order.js",
+    "test262/test/language/expressions/assignment/target-super-identifier-reference-null.js",
+    "test262/test/language/expressions/assignment/target-super-computed-reference-null.js",
     "test262/test/language/expressions/object/accessor-name-literal-numeric-binary.js",
     "test262/test/language/expressions/object/accessor-name-literal-numeric-octal.js",
     "test262/test/language/expressions/object/concise-generator.js",
@@ -900,6 +904,8 @@ SKIP_LIST = [
     "test262/test/built-ins/TypedArrayConstructors/ctors/buffer-arg/detachedbuffer.js",
     "test262/test/built-ins/TypedArrayConstructors/ctors/buffer-arg/length-to-number-detachbuffer.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/detached-buffer.js",
+    "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/detached-buffer-throws.js",
+    "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/detached-buffer-throws-realm.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/tonumber-value-detached-buffer.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/Get/detached-buffer.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/Get/infinity-detached-buffer.js",
@@ -944,6 +950,7 @@ SKIP_LIST = [
     "test262/test/built-ins/TypedArrays/internals/HasProperty/key-is-minus-zero.js",
     "test262/test/built-ins/TypedArrays/internals/HasProperty/key-is-greater-than-last-index.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/key-is-greater-than-last-index.js",
+    "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/key-is-not-numeric-index-throws.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/key-is-numericindex.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/key-is-lower-than-zero.js",
     "test262/test/built-ins/TypedArrayConstructors/internals/DefineOwnProperty/key-is-not-integer.js",
@@ -969,6 +976,7 @@ SKIP_LIST = [
     # Unsupported harness tests
     "test262/test/harness/timer.js",
     "test262/test/harness/assert-throws-early-referenceerror.js",
+    "test262/test/harness/assert-throws-same-realm.js",
     # SpeciesConstructor
     "test262/test/built-ins/ArrayBuffer/prototype/slice/species-constructor-is-not-object.js",
     "test262/test/built-ins/TypedArray/prototype/map/speciesctor-get-ctor-abrupt.js",
@@ -1020,6 +1028,16 @@ SKIP_LIST = [
     # CoreFoundation. See T24545708 for a discussion.
     "test262/test/built-ins/String/prototype/toLocaleLowerCase/special_casing_conditional.js",
     "test262/test/built-ins/String/prototype/toLowerCase/special_casing_conditional.js",
+    # Intl
+    "test262/test/intl402/Collator/subclassing.js",
+    "test262/test/intl402/Collator/unicode-ext-value-collation.js",
+    "test262/test/intl402/Collator/ignore-invalid-unicode-ext-values.js",
+    "test262/test/intl402/Collator/proto-from-ctor-realm.js",
+    "test262/test/intl402/Collator/prototype/resolvedOptions/order.js",
+    "test262/test/intl402/String/prototype/toLocaleLowerCase/special_casing_Lithuanian.js",
+    "test262/test/intl402/String/prototype/toLocaleLowerCase/special_casing_Azeri.js",
+    "test262/test/intl402/String/prototype/toLocaleLowerCase/special_casing_Turkish.js",
+    "test262/test/intl402/String/prototype/toLocaleUpperCase/special_casing_Lithuanian.js",
     # Unicode 13.0
     "test262/test/language/identifiers/part-unicode-13.0.0-escaped.js",
     "test262/test/language/identifiers/part-unicode-13.0.0.js",
@@ -1480,7 +1498,6 @@ SKIP_LIST = [
     "mjsunit/smi-mul-const.js",
     "mjsunit/smi-representation.js",
     "mjsunit/stack-traces-2.js",
-    "mjsunit/stack-traces-custom-lazy.js",
     "mjsunit/stack-traces-custom.js",
     "mjsunit/stack-traces-overflow.js",
     "mjsunit/string-case.js",
@@ -1793,19 +1810,19 @@ PERMANENT_SKIP_LIST = [
     "test262/test/built-ins/Atomics/",
     "test262/test/built-ins/AsyncGeneratorFunction/",
     "test262/test/built-ins/SharedArrayBuffer/",
-    "test262/test/built-ins/intl402/",
-    "test262/test/intl402/Collator/",
     "test262/test/intl402/Date/",
     "test262/test/intl402/DateTimeFormat/",
     "test262/test/intl402/DisplayNames/",
-    "test262/test/intl402/Intl/",
+    "test262/test/intl402/Intl/supportedValuesOf/",
+    "test262/test/intl402/Intl/builtin.js",
+    "test262/test/intl402/Intl/getCanonicalLocales/has-property.js",
+    "test262/test/intl402/Intl/getCanonicalLocales/Locale-object.js",
     "test262/test/intl402/ListFormat/",
     "test262/test/intl402/Locale/",
     "test262/test/intl402/Number/",
     "test262/test/intl402/NumberFormat/",
     "test262/test/intl402/PluralRules/",
     "test262/test/intl402/Segmenter/",
-    "test262/test/intl402/String/",
     "test262/test/intl402/RelativeTimeFormat/",
     "mjsunit/asm/",
     "mjsunit/regress/wasm/",
@@ -1813,12 +1830,10 @@ PERMANENT_SKIP_LIST = [
     "mjsunit/es6/proxies-",
     "mjsunit/es6/proxies.js",
     # Flow AST features.
-    "flow/bigint/",
     "flow/comment_interning/",
     "flow/decorators/",
     "flow/types/annotations_in_comments/",
     "flow/types/annotations_in_comments_invalid/",
-    "flow/types/bigint_literal/",
     # Flow bug
     "flow/JSX_invalid/migrated_0000.js",
 ]
@@ -1853,6 +1868,7 @@ HANDLESAN_SKIP_LIST = [
     "test262/test/built-ins/encodeURIComponent/S15.1.3.4_A2.3_T1.js",
     "test262/test/built-ins/parseInt/S15.1.2.2_A8.js",
     "test262/test/built-ins/parseFloat/S15.1.2.3_A6.js",
+    "test262/test/built-ins/String/prototype/repeat/repeat-string-n-times.js",
 ]
 
 UNSUPPORTED_FEATURES = [
@@ -1871,22 +1887,28 @@ UNSUPPORTED_FEATURES = [
     "class-static-fields-public",
     "class-static-fields-private",
     "class-static-methods-private",
+    "class-static-block",
     "class-methods-private",
     "computed-property-names",
     "const",
     "destructuring-binding",
     "dynamic-import",
+    "error-cause",
     "FinalizationGroup",
     "FinalizationRegistry",
+    "import-assertions",
     "json-superset",
     "let",
     "new.target",
     "regexp-match-indices",
     "regexp-named-groups",
     "regexp-unicode-property-escapes",
+    "resizable-arraybuffer",
     "string-trimming",
     "super",
+    "ShadowRealm",
     "tail-call-optimization",
+    "Temporal",
     "well-formed-json-stringify",
     "u180e",
     "WeakRef",
@@ -1899,6 +1921,9 @@ PERMANENT_UNSUPPORTED_FEATURES = [
     "SharedArrayBuffer",
     "cross-realm",
 ]
+
+# Tests for Intl features
+INTL_TESTS = ["test262/test/intl402"]
 
 assert len(set(SKIP_LIST)) == len(SKIP_LIST), "Skiplist has duplicates: " + str(
     [item for item, count in collections.Counter(SKIP_LIST).items() if count > 1]

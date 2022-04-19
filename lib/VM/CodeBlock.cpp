@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -168,17 +168,20 @@ SLP CodeBlock::getArrayBufferIter(uint32_t idx, unsigned int numLiterals)
       runtimeModule_};
 }
 
-std::pair<SLP, SLP> CodeBlock::getObjectBufferIter(
-    uint32_t keyIdx,
-    uint32_t valIdx,
-    unsigned int numLiterals) const {
-  return std::pair<SLP, SLP>{
-      SLP{runtimeModule_->getBytecode()->getObjectKeyBuffer().slice(keyIdx),
-          numLiterals,
-          nullptr},
-      SLP{runtimeModule_->getBytecode()->getObjectValueBuffer().slice(valIdx),
-          numLiterals,
-          runtimeModule_}};
+SLP CodeBlock::getObjectBufferKeyIter(uint32_t idx, unsigned int numLiterals)
+    const {
+  return SLP{
+      runtimeModule_->getBytecode()->getObjectKeyBuffer().slice(idx),
+      numLiterals,
+      nullptr};
+}
+
+SLP CodeBlock::getObjectBufferValueIter(uint32_t idx, unsigned int numLiterals)
+    const {
+  return SLP{
+      runtimeModule_->getBytecode()->getObjectValueBuffer().slice(idx),
+      numLiterals,
+      runtimeModule_};
 }
 
 SymbolID CodeBlock::getNameMayAllocate() const {
@@ -191,10 +194,10 @@ SymbolID CodeBlock::getNameMayAllocate() const {
       functionHeader_.functionName());
 }
 
-std::string CodeBlock::getNameString(GCBase::GCCallbacks *runtime) const {
+std::string CodeBlock::getNameString(GCBase::GCCallbacks &runtime) const {
 #ifndef HERMESVM_LEAN
   if (isLazy()) {
-    return runtime->convertSymbolToUTF8(runtimeModule_->getLazyName());
+    return runtime.convertSymbolToUTF8(runtimeModule_->getLazyName());
   }
 #endif
   return runtimeModule_->getStringFromStringID(functionHeader_.functionName());
@@ -329,7 +332,7 @@ std::unique_ptr<hbc::BytecodeModule> compileLazyFunction(
 }
 } // namespace
 
-void CodeBlock::lazyCompileImpl(Runtime *runtime) {
+void CodeBlock::lazyCompileImpl(Runtime &runtime) {
   assert(isLazy() && "Laziness has not been checked");
   PerfSection perf("Lazy function compilation");
   auto *provider = (hbc::BCProviderLazy *)runtimeModule_->getBytecode();
@@ -349,7 +352,7 @@ void CodeBlock::lazyCompileImpl(Runtime *runtime) {
 #endif // HERMESVM_LEAN
 
 void CodeBlock::markCachedHiddenClasses(
-    Runtime *runtime,
+    Runtime &runtime,
     WeakRootAcceptor &acceptor) {
   for (auto &prop :
        llvh::makeMutableArrayRef(propertyCache(), propertyCacheSize_)) {
@@ -387,8 +390,8 @@ static void makeWritable(void *address, size_t length) {
   void *endAddress = static_cast<void *>(static_cast<char *>(address) + length);
 
   // Align the address to page size before setting the pagesize.
-  void *alignedAddress = safeTypeCast<size_t, void *>(llvh::alignDown(
-      safeTypeCast<void *, size_t>(address), hermes::oscompat::page_size()));
+  void *alignedAddress = reinterpret_cast<void *>(llvh::alignDown(
+      reinterpret_cast<uintptr_t>(address), hermes::oscompat::page_size()));
 
   size_t totalLength =
       static_cast<char *>(endAddress) - static_cast<char *>(alignedAddress);
@@ -430,30 +433,6 @@ void CodeBlock::uninstallBreakpointAtOffset(
   // This is valid because we can only uninstall breakpoints that we installed.
   // Therefore, the page here must be writable.
   *address = opCode;
-}
-
-#endif
-
-#ifdef HERMESVM_SERIALIZE
-void CodeBlock::serialize(Serializer &s) const {
-  // The identity of a CodeBlock is its functionId. Note: We don't
-  // serialize/deserialize PropertyCache as of now.
-  // TODO: serialize/deserialize PropertyCacheEntry.
-  s.writeInt<uint32_t>(getFunctionID());
-  s.endObject(this);
-}
-
-CodeBlock *CodeBlock::deserialize(
-    Deserializer &d,
-    RuntimeModule *runtimeModule) {
-  uint32_t index = d.readInt<uint32_t>();
-  auto *res = CodeBlock::createCodeBlock(
-      runtimeModule,
-      runtimeModule->getBytecode()->getFunctionHeader(index),
-      runtimeModule->getBytecode()->getBytecode(index),
-      index);
-  d.endObject(res);
-  return res;
 }
 
 #endif

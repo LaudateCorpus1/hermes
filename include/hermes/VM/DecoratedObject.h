@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -36,11 +36,11 @@ class DecoratedObject : public JSObject {
 
   /// \param additionalSlotCount internal slots to reserve within the
   /// object.  Only a small number of slots are available; this value
-  /// cannot be greater than InternalProperty::NumInternalProperties -
+  /// cannot be greater than InternalProperty::NumAnonymousInternalProperties -
   /// numOverlaps, which is currently 3.
   /// If allocation fails, the GC declares an OOM.
   static PseudoHandle<DecoratedObject> create(
-      Runtime *runtime,
+      Runtime &runtime,
       Handle<JSObject> parentHandle,
       std::unique_ptr<Decoration> decoration,
       unsigned int additionalSlotCount = 0);
@@ -65,7 +65,7 @@ class DecoratedObject : public JSObject {
   /// the create method.
   static SmallHermesValue getAdditionalSlotValue(
       DecoratedObject *self,
-      Runtime *runtime,
+      Runtime &runtime,
       unsigned index) {
     return JSObject::getInternalProperty(
         self, runtime, numOverlapSlots<DecoratedObject>() + index);
@@ -76,7 +76,7 @@ class DecoratedObject : public JSObject {
   /// the create method.
   static void setAdditionalSlotValue(
       DecoratedObject *self,
-      Runtime *runtime,
+      Runtime &runtime,
       unsigned index,
       SmallHermesValue value) {
     JSObject::setInternalProperty(
@@ -85,6 +85,10 @@ class DecoratedObject : public JSObject {
 
   using Super = JSObject;
   static const ObjectVTable vt;
+
+  static constexpr CellKind getCellKind() {
+    return CellKind::DecoratedObjectKind;
+  }
   static bool classof(const GCCell *cell) {
     return kindInRange(
         cell->getKind(),
@@ -96,25 +100,16 @@ class DecoratedObject : public JSObject {
   ~DecoratedObject() = default;
 
   DecoratedObject(
-      Runtime *runtime,
-      const ObjectVTable *vt,
+      Runtime &runtime,
       Handle<JSObject> parent,
       Handle<HiddenClass> clazz,
       std::unique_ptr<Decoration> decoration)
-      : JSObject(runtime, &vt->base, *parent, *clazz),
+      : JSObject(runtime, *parent, *clazz),
         decoration_(std::move(decoration)) {}
 
  protected:
-  static void _finalizeImpl(GCCell *cell, GC *);
+  static void _finalizeImpl(GCCell *cell, GC &);
   static size_t _mallocSizeImpl(GCCell *cell);
-
- public:
-#ifdef HERMESVM_SERIALIZE
-  explicit DecoratedObject(Deserializer &d);
-
-  friend void DecoratedObjectSerialize(Serializer &s, const GCCell *cell);
-  friend void DecoratedObjectDeserialize(Deserializer &d, CellKind kind);
-#endif
 
  private:
   std::unique_ptr<Decoration> decoration_;

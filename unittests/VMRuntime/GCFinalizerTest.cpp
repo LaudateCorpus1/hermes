@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -25,7 +25,7 @@ namespace {
 
 using testhelpers::DummyObject;
 
-static DummyObject *createWithFinalizeCount(GC *gc, int *numFinalized) {
+static DummyObject *createWithFinalizeCount(GC &gc, int *numFinalized) {
   auto *obj = DummyObject::create(gc);
   obj->finalizerCallback = std::make_unique<DummyObject::Callback>(
       [numFinalized]() mutable { (*numFinalized)++; });
@@ -37,9 +37,9 @@ TEST(GCFinalizerTest, NoDeadFinalizables) {
   auto runtime = DummyRuntime::create(kTestGCConfigSmall);
   DummyRuntime &rt = *runtime;
 
-  GCScope scope{&rt};
-  DummyObject::create(&rt.getHeap());
-  rt.makeHandle(createWithFinalizeCount(&rt.getHeap(), &finalized));
+  GCScope scope{rt};
+  DummyObject::create(rt.getHeap());
+  rt.makeHandle(createWithFinalizeCount(rt.getHeap(), &finalized));
   rt.collect();
 
   ASSERT_EQ(0, finalized);
@@ -50,9 +50,9 @@ TEST(GCFinalizerTest, FinalizablesOnly) {
   auto runtime = DummyRuntime::create(kTestGCConfigSmall);
   DummyRuntime &rt = *runtime;
 
-  GCScope scope{&rt};
-  createWithFinalizeCount(&rt.getHeap(), &finalized);
-  rt.makeHandle(createWithFinalizeCount(&rt.getHeap(), &finalized));
+  GCScope scope{rt};
+  createWithFinalizeCount(rt.getHeap(), &finalized);
+  rt.makeHandle(createWithFinalizeCount(rt.getHeap(), &finalized));
   rt.collect();
 
   ASSERT_EQ(1, finalized);
@@ -64,12 +64,12 @@ TEST(GCFinalizerTest, MultipleCollect) {
   DummyRuntime &rt = *runtime;
 
   {
-    GCScope scope{&rt};
-    createWithFinalizeCount(&rt.getHeap(), &finalized);
-    DummyObject::create(&rt.getHeap());
-    createWithFinalizeCount(&rt.getHeap(), &finalized);
-    rt.makeHandle(createWithFinalizeCount(&rt.getHeap(), &finalized));
-    rt.makeHandle(DummyObject::create(&rt.getHeap()));
+    GCScope scope{rt};
+    createWithFinalizeCount(rt.getHeap(), &finalized);
+    DummyObject::create(rt.getHeap());
+    createWithFinalizeCount(rt.getHeap(), &finalized);
+    rt.makeHandle(createWithFinalizeCount(rt.getHeap(), &finalized));
+    rt.makeHandle(DummyObject::create(rt.getHeap()));
     rt.collect();
 
     ASSERT_EQ(2, finalized);
@@ -85,9 +85,9 @@ TEST(GCFinalizerTest, FinalizeAllOnRuntimeDestructDummyRuntime) {
   {
     auto rt = DummyRuntime::create(kTestGCConfigSmall);
 
-    GCScope scope{rt.get()};
-    rt->makeHandle(createWithFinalizeCount(&rt->getHeap(), &finalized));
-    rt->makeHandle(createWithFinalizeCount(&rt->getHeap(), &finalized));
+    GCScope scope{*rt};
+    rt->makeHandle(createWithFinalizeCount(rt->getHeap(), &finalized));
+    rt->makeHandle(createWithFinalizeCount(rt->getHeap(), &finalized));
 
     // Collect once to get the objects into the old gen, then a second time
     // to get their mark bits set in their stable locations.
@@ -105,12 +105,12 @@ TEST(GCFinalizerTest, FinalizeAllOnRuntimeDestructRealRuntime) {
   int finalized = 0;
   std::shared_ptr<Runtime> rt{Runtime::create(kTestRTConfig)};
   {
-    GCScope gcScope(rt.get());
+    GCScope gcScope(*rt);
 
     auto r1 = rt->makeHandle(HermesValue::encodeObjectValue(
-        createWithFinalizeCount(&rt->getHeap(), &finalized)));
+        createWithFinalizeCount(rt->getHeap(), &finalized)));
     auto r2 = rt->makeHandle(HermesValue::encodeObjectValue(
-        createWithFinalizeCount(&rt->getHeap(), &finalized)));
+        createWithFinalizeCount(rt->getHeap(), &finalized)));
 
     // Collect once to get the objects into the old gen, then a second time
     // to get their mark bits set in their stable locations.

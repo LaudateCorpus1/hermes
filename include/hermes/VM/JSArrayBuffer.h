@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -26,19 +26,22 @@ class JSArrayBuffer final : public JSObject {
 
   static const ObjectVTable vt;
 
+  static constexpr CellKind getCellKind() {
+    return CellKind::JSArrayBufferKind;
+  }
   static bool classof(const GCCell *cell) {
-    return cell->getKind() == CellKind::ArrayBufferKind;
+    return cell->getKind() == CellKind::JSArrayBufferKind;
   }
 
   static PseudoHandle<JSArrayBuffer> create(
-      Runtime *runtime,
+      Runtime &runtime,
       Handle<JSObject> prototype);
 
   /// ES7 24.1.1.4
   /// NOTE: since SharedArrayBuffer does not exist, this does not use the
   /// SpeciesConstructor, it always allocates a normal ArrayBuffer.
   static CallResult<Handle<JSArrayBuffer>> clone(
-      Runtime *runtime,
+      Runtime &runtime,
       Handle<JSArrayBuffer> src,
       size_type srcByteOffset,
       size_type srcSize);
@@ -57,7 +60,7 @@ class JSArrayBuffer final : public JSObject {
   ///   uninitialized.
   /// \return ExecutionStatus::RETURNED iff the allocation was successful.
   ExecutionStatus
-  createDataBlock(Runtime *runtime, size_type size, bool zero = true);
+  createDataBlock(Runtime &runtime, size_type size, bool zero = true);
 
   /// Retrieves a pointer to the held buffer.
   /// \return A pointer to the buffer owned by this object. This can be null
@@ -83,14 +86,13 @@ class JSArrayBuffer final : public JSObject {
   /// Detaches this buffer from its data block, effectively freeing the storage
   /// and setting this ArrayBuffer to have zero size.  The \p gc argument allows
   /// the GC to be informed of this external memory deletion.
-  void detach(GC *gc);
+  void detach(GC &gc);
 
  protected:
-  static void _finalizeImpl(GCCell *cell, GC *gc);
+  static void _finalizeImpl(GCCell *cell, GC &gc);
   static size_t _mallocSizeImpl(GCCell *cell);
-  static gcheapsize_t _externalMemorySizeImpl(const GCCell *cell);
-  static void _snapshotAddEdgesImpl(GCCell *cell, GC *gc, HeapSnapshot &snap);
-  static void _snapshotAddNodesImpl(GCCell *cell, GC *gc, HeapSnapshot &snap);
+  static void _snapshotAddEdgesImpl(GCCell *cell, GC &gc, HeapSnapshot &snap);
+  static void _snapshotAddNodesImpl(GCCell *cell, GC &gc, HeapSnapshot &snap);
 
  private:
   uint8_t *data_;
@@ -98,15 +100,8 @@ class JSArrayBuffer final : public JSObject {
   bool attached_;
 
  public:
-#ifdef HERMESVM_SERIALIZE
-  explicit JSArrayBuffer(Deserializer &d);
-
-  friend void ArrayBufferSerialize(Serializer &s, const GCCell *cell);
-  friend void ArrayBufferDeserialize(Deserializer &d, CellKind kind);
-#endif
-
   JSArrayBuffer(
-      Runtime *runtime,
+      Runtime &runtime,
       Handle<JSObject> parent,
       Handle<HiddenClass> clazz);
 

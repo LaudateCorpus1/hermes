@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -167,7 +167,7 @@ class GCSymbolID final : public SymbolID {
   GCSymbolID &operator=(const GCSymbolID &) = delete;
 
   /// Write a new value into this. Performs a write barrier for some GCs.
-  inline GCSymbolID &set(SymbolID sym, GC *gc);
+  inline GCSymbolID &set(SymbolID sym, GC &gc);
 };
 
 /// A SymbolID which is stored in non-moveable memory and is known to the

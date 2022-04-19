@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -89,7 +89,7 @@ function(add_unittest test_suite test_name)
 
   add_hermes_executable(${test_name} ${ARGN})
 
-  target_link_libraries(${test_name} PRIVATE gtest_main gtest)
+  target_link_libraries(${test_name} gtest_main gtest)
 
   add_dependencies(${test_suite} ${test_name})
   get_target_property(test_suite_folder ${test_suite} FOLDER)

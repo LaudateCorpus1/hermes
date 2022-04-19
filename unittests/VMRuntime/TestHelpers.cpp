@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,17 +8,18 @@
 #include "TestHelpers.h"
 
 #include "hermes/Support/Compiler.h"
+#include "hermes/VM/HeapRuntime.h"
 
 namespace hermes {
 namespace vm {
 
 ::testing::AssertionResult isException(
-    Runtime *runtime,
+    Runtime &runtime,
     ExecutionStatus status) {
   if (status == ExecutionStatus::EXCEPTION) {
     std::string s;
     llvh::raw_string_ostream os(s);
-    runtime->printException(os, runtime->makeHandle(runtime->getThrownValue()));
+    runtime.printException(os, runtime.makeHandle(runtime.getThrownValue()));
     os.flush();
     return ::testing::AssertionSuccess() << "An exception occurred: " << s;
   }
@@ -30,8 +31,8 @@ DummyRuntime::DummyRuntime(
     std::shared_ptr<StorageProvider> storageProvider,
     std::shared_ptr<CrashManager> crashMgr)
     : gcStorage_{
-          this,
-          this,
+          *this,
+          *this,
           gcConfig,
           crashMgr,
           std::move(storageProvider),
@@ -48,8 +49,9 @@ std::shared_ptr<DummyRuntime> DummyRuntime::create(
     const GCConfig &gcConfig,
     std::shared_ptr<StorageProvider> provider,
     std::shared_ptr<CrashManager> crashMgr) {
-  DummyRuntime *rt = new DummyRuntime(gcConfig, provider, crashMgr);
-  return std::shared_ptr<DummyRuntime>{rt};
+  auto rt = HeapRuntime<DummyRuntime>::create(provider);
+  new (rt.get()) DummyRuntime(gcConfig, provider, crashMgr);
+  return rt;
 }
 
 std::shared_ptr<DummyRuntime> DummyRuntime::create(const GCConfig &gcConfig) {
@@ -57,7 +59,11 @@ std::shared_ptr<DummyRuntime> DummyRuntime::create(const GCConfig &gcConfig) {
 }
 
 std::unique_ptr<StorageProvider> DummyRuntime::defaultProvider() {
+#ifdef HERMESVM_CONTIGUOUS_HEAP
+  return StorageProvider::contiguousVAProvider(128 << 20);
+#else
   return StorageProvider::mmapProvider();
+#endif
 }
 
 void DummyRuntime::collect() {

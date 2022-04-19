@@ -33,26 +33,26 @@ Create a base directory to work in, e.g. `~/workspace`, and cd into it.
 After `cd`ing, follow the steps below to generate the Hermes build system:
 
     git clone https://github.com/facebook/hermes.git
-    hermes/utils/build/configure.py
+    cmake -S hermes -B build -G Ninja
 
 The build system has now been generated in the `build` directory. To perform the build:
 
-    cd build && ninja
+    cmake --build ./build
+
 
 ## Release Build
 
-The above instructions create an unoptimized debug build. The `--distribute` flag will enable a release build, in the `build_release` directory. Example:
+The above instructions create an unoptimized debug build. The `-DCMAKE_BUILD_TYPE=Release` flag will create a release build:
 
-    hermes/utils/build/configure.py --distribute
-    cd build_release && ninja
+    cmake -S hermes -B build_release -G Ninja -DCMAKE_BUILD_TYPE=Release
+    cmake --build ./build_release
 
 ## Building on Windows
 
-The Windows build depends on which particular combination of GitBash/Cygwin/WSL and Visual Studio is used.
+To build on Windows using Visual Studio with a checkout in the `hermes` directory:
 
-    git -c core.autocrlf=false clone https://github.com/facebook/hermes.git
-    hermes/utils/build/configure.py --build-system='Visual Studio 16 2019' --distribute
-    cd build_release && MSBuild.exe ALL_BUILD.vcxproj /p:Configuration=Release
+    cmake -S hermes -B build -G 'Visual Studio 16 2019'
+    cmake --build ./build
 
 ## Running Hermes
 
@@ -72,6 +72,21 @@ The primary binary is the `hermes` tool, which will be found at `build/bin/herme
 To run the Hermes test suite:
 
     ninja check-hermes
+
+To run Hermes against the test262 suite, you need to have a Hermes binary built
+already and a clone of the [test262 repo](https://github.com/tc39/test262/):
+
+    hermes/utils/testsuite/run_testsuite.py -b <hermes_build> <test262>
+
+E.g. if we configured at `~/hermes_build` (i.e. `~/hermes_build/bin/hermes` is
+an executable) and cloned test262 at `~/test262`, then perform:
+
+    hermes/utils/testsuite/run_testsuite.py -b ~/hermes_build ~/test262/test
+
+Note that you can also only test against part of a test suite, e.g. to run the
+Intl402 subset of the test262, you can specifiy a subdir:
+
+    hermes/utils/testsuite/run_testsuite.py -b ~/hermes_build ~/test262/test/intl402
 
 ## Formatting Code
 

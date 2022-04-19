@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,6 +10,7 @@
 #include "dtoa/dtoa.h"
 #include "hermes/Support/Conversions.h"
 
+#include "llvh/ADT/ScopeExit.h"
 #include "llvh/ADT/StringSwitch.h"
 
 using llvh::Twine;
@@ -629,23 +630,33 @@ const Token *JSLexer::advanceInJSXChild() {
 
         // Build up cooked value using XHTML entities
         tmpStorage_.clear();
+        rawStorage_.clear();
         for (;;) {
           char c = *curCharPtr_;
 
-          if (c == '&') {
+          if (LLVM_UNLIKELY(isUTF8Start(*curCharPtr_))) {
+            uint32_t codepoint = _decodeUTF8SlowPath(curCharPtr_);
+            appendUnicodeToStorage(codepoint);
+            appendUnicodeToStorage(codepoint, rawStorage_);
+            continue;
+          } else if (c == '&') {
+            const char *htmlStart = curCharPtr_;
             auto codePoint = consumeHTMLEntityOptional();
             if (codePoint.hasValue()) {
               appendUnicodeToStorage(*codePoint);
+              rawStorage_.append(
+                  {htmlStart, (size_t)(curCharPtr_ - htmlStart)});
               continue;
             }
           } else if (
               (c == 0 && curCharPtr_ == bufferEnd_) || c == '{' || c == '<') {
             token_.setJSXText(
                 getStringLiteral(tmpStorage_.str()),
-                getStringLiteral(StringRef(start, curCharPtr_ - start)));
+                getStringLiteral(rawStorage_.str()));
             break;
           }
           tmpStorage_.push_back(c);
+          rawStorage_.push_back(c);
           ++curCharPtr_;
         }
         break;
@@ -843,6 +854,13 @@ bool JSLexer::isCurrentTokenADirective() {
           // It implies a new line, so we are good.
           return true;
         } else if (ptr[1] == '*') { // Block comment?
+          auto savedCommentStorageSize = commentStorage_.size();
+          auto commentScope = llvh::make_scope_exit([&] {
+            if (storeComments_)
+              commentStorage_.erase(
+                  commentStorage_.begin() + savedCommentStorageSize,
+                  commentStorage_.end());
+          });
           SourceErrorManager::SaveAndSuppressMessages suppress(&sm_);
           ptr = skipBlockComment(ptr);
           continue;
@@ -894,7 +912,15 @@ OptValue<TokenKind> JSLexer::lookahead1(OptValue<TokenKind> expectedToken) {
   SMLoc end = token_.getEndLoc();
   const char *cur = curCharPtr_;
   SourceErrorManager::SaveAndSuppressMessages suppress(&sm_);
-  size_t savedCommentStorageSize = commentStorage_.size();
+
+  // Remove any comments that were stored during the lookahead
+  auto savedCommentStorageSize = commentStorage_.size();
+  auto commentScope = llvh::make_scope_exit([&] {
+    if (storeComments_)
+      commentStorage_.erase(
+          commentStorage_.begin() + savedCommentStorageSize,
+          commentStorage_.end());
+  });
 
   advance();
   OptValue<TokenKind> kind = token_.getKind();
@@ -914,13 +940,6 @@ OptValue<TokenKind> JSLexer::lookahead1(OptValue<TokenKind> expectedToken) {
     token_.setResWord(savedKind, savedIdent);
   }
   seek(SMLoc::getFromPointer(cur));
-
-  // Remove any comments that were stored during the lookahead
-  if (storeComments_ && savedCommentStorageSize < commentStorage_.size()) {
-    commentStorage_.erase(
-        commentStorage_.begin() + savedCommentStorageSize,
-        commentStorage_.end());
-  }
 
   // Undo the storage for the token we just advanced to.
   if (LLVM_UNLIKELY(storeTokens_)) {
@@ -1343,6 +1362,7 @@ void JSLexer::scanNumber(GrammarContext grammarContext) {
   unsigned radix = 10;
   bool real = false;
   bool ok = true;
+  const char *rawStart = curCharPtr_;
   const char *start = curCharPtr_;
 
   // True when we encounter the numeric literal separator: '_'.
@@ -1437,11 +1457,20 @@ exponent:
 end:
   // We arrive here after we have consumed all we can from the number. Now,
   // as per the spec, we consume a sequence of identifier characters if they
-  // directly, which means the number is invalid though.
-  //
+  // follow directly, which means the number is invalid if it's not BigInt.
   if (consumeIdentifierStart()) {
-    ok = false;
     consumeIdentifierParts<IdentifierMode::JS>();
+
+    llvh::StringRef raw{rawStart, (size_t)(curCharPtr_ - rawStart)};
+    if (ok && !real && (!legacyOctal || raw == "0n") && tmpStorage_ == "n") {
+      // This is a BigInt.
+      rawStorage_.clear();
+      rawStorage_.append(raw);
+      token_.setBigIntLiteral(getStringLiteral(rawStorage_));
+      return;
+    }
+
+    ok = false;
   }
 
   double val;

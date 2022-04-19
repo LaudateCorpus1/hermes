@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -21,15 +21,6 @@
 
 #include <atomic>
 #include <thread>
-
-#ifdef HERMESVM_SERIALIZE
-namespace hermes {
-namespace vm {
-class Serializer;
-class Deserializer;
-} // namespace vm
-} // namespace hermes
-#endif
 
 namespace hermes {
 namespace hbc {
@@ -94,7 +85,7 @@ class RuntimeFunctionHeader {
 };
 
 static_assert(
-    IsTriviallyCopyable<RuntimeFunctionHeader, true>::value,
+    std::is_trivially_copyable<RuntimeFunctionHeader>::value,
     "RuntimeFunctionHeader should be trivially copyable");
 
 /// Base class designed to provide bytecode data. We use this class
@@ -308,11 +299,6 @@ class BCProviderBase {
   /// given function under a virtual scenario where no dedup happens, i.e.
   /// by accumulating the total size of all bytecode prior to this function.
   uint32_t getVirtualOffsetForFunction(uint32_t functionID) const;
-
-#ifdef HERMESVM_SERIALIZE
-  /// Serialize this BCProvider.
-  virtual void serialize(vm::Serializer &s) const = 0;
-#endif
 };
 
 /// BCProviderFromBuffer will be used when we are loading bytecode from
@@ -509,15 +495,6 @@ class BCProviderFromBuffer final : public BCProviderBase {
   bool isLazy() const override {
     return false;
   }
-
-#ifdef HERMESVM_SERIALIZE
-  /// Serialize this BCProviderFromBuffer.
-  void serialize(vm::Serializer &s) const override;
-
-  /// Read serialized data and create a BCProviderFromBuffer. \return pointer to
-  /// the newly created BCProviderFromBuffer.
-  static std::unique_ptr<BCProviderFromBuffer> deserialize(vm::Deserializer &d);
-#endif
 };
 
 } // namespace hbc

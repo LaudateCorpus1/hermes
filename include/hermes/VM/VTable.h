@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -31,10 +31,10 @@ class GCCell;
 struct VTable {
   class HeapSnapshotMetadata final {
    private:
-    using NameCallback = std::string(GCCell *, GC *);
-    using AddEdgesCallback = void(GCCell *, GC *, HeapSnapshot &);
-    using AddNodesCallback = void(GCCell *, GC *, HeapSnapshot &);
-    using AddLocationsCallback = void(GCCell *, GC *, HeapSnapshot &);
+    using NameCallback = std::string(GCCell *, GC &);
+    using AddEdgesCallback = void(GCCell *, GC &, HeapSnapshot &);
+    using AddNodesCallback = void(GCCell *, GC &, HeapSnapshot &);
+    using AddLocationsCallback = void(GCCell *, GC &, HeapSnapshot &);
 
    public:
     /// Construct a HeapSnapshotMetadata, that is used by the GC to decide how
@@ -67,12 +67,12 @@ struct VTable {
     HeapSnapshot::NodeType nodeType() const {
       return nodeType_;
     }
-    std::string nameForNode(GCCell *cell, GC *gc) const;
+    std::string nameForNode(GCCell *cell, GC &gc) const;
     /// Get the default name for the node, without any custom behavior.
     std::string defaultNameForNode(GCCell *cell) const;
-    void addEdges(GCCell *cell, GC *gc, HeapSnapshot &snap) const;
-    void addNodes(GCCell *cell, GC *gc, HeapSnapshot &snap) const;
-    void addLocations(GCCell *cell, GC *gc, HeapSnapshot &snap) const;
+    void addEdges(GCCell *cell, GC &gc, HeapSnapshot &snap) const;
+    void addNodes(GCCell *cell, GC &gc, HeapSnapshot &snap) const;
+    void addLocations(GCCell *cell, GC &gc, HeapSnapshot &snap) const;
 
    private:
     const HeapSnapshot::NodeType nodeType_;
@@ -108,9 +108,10 @@ struct VTable {
   /// allocations or access any garbage-collectable objects.  Unless an
   /// operation is documented to be safe to call from a finalizer, it probably
   /// isn't.
-  using FinalizeCallback = void(GCCell *, GC *gc);
+  using FinalizeCallback = void(GCCell *, GC &gc);
   FinalizeCallback *const finalize_;
-  /// Call gc functions on weak-reference-holding objects.
+  /// Call GC functions on weak-reference-holding objects. In a concurrent GC,
+  /// guaranteed to be called while the weak ref mutex is held.
   using MarkWeakCallback = void(GCCell *, WeakRefAcceptor &);
   MarkWeakCallback *const markWeak_;
   /// Report if there is any size contribution from an object beyond the GC.
@@ -121,16 +122,17 @@ struct VTable {
   /// This should not modify the cell.
   using TrimSizeCallback = gcheapsize_t(const GCCell *);
   TrimSizeCallback *const trimSize_;
-  /// Calculate the external memory size.
-  using ExternalMemorySize = gcheapsize_t(const GCCell *);
-  ExternalMemorySize *const externalMemorySize_;
 
   /// Any metadata associated with heap snapshots.
   const HeapSnapshotMetadata snapshotMetaData;
 
   /// Static array storing the VTable corresponding to each CellKind. This is
-  /// initialized by getMetadataTable.
+  /// initialized by buildMetadataTable.
   static std::array<const VTable *, kNumCellKinds> vtableArray;
+
+  static const VTable *getVTable(CellKind c) {
+    return vtableArray[static_cast<size_t>(c)];
+  }
 
   constexpr explicit VTable(
       CellKind kind,
@@ -139,7 +141,6 @@ struct VTable {
       MarkWeakCallback *markWeak = nullptr,
       MallocSizeCallback *mallocSize = nullptr,
       TrimSizeCallback *trimSize = nullptr,
-      ExternalMemorySize *externalMemorySize = nullptr,
       HeapSnapshotMetadata snapshotMetaData =
           HeapSnapshotMetadata{
               HeapSnapshot::NodeType::Object,
@@ -153,21 +154,20 @@ struct VTable {
         markWeak_(markWeak),
         mallocSize_(mallocSize),
         trimSize_(trimSize),
-        externalMemorySize_(externalMemorySize),
         snapshotMetaData(snapshotMetaData) {}
 
   bool isVariableSize() const {
     return size == 0;
   }
 
-  void finalizeIfExists(GCCell *cell, GC *gc) const {
+  void finalizeIfExists(GCCell *cell, GC &gc) const {
     assert(isValid());
     if (finalize_) {
       finalize_(cell, gc);
     }
   }
 
-  void finalize(GCCell *cell, GC *gc) const {
+  void finalize(GCCell *cell, GC &gc) const {
     assert(isValid());
     assert(
         finalize_ &&
@@ -175,11 +175,9 @@ struct VTable {
     finalize_(cell, gc);
   }
 
-  void markWeakIfExists(GCCell *cell, WeakRefAcceptor &acceptor) const {
+  MarkWeakCallback *getMarkWeakCallback() const {
     assert(isValid());
-    if (markWeak_) {
-      markWeak_(cell, acceptor);
-    }
+    return markWeak_;
   }
 
   size_t getMallocSize(GCCell *cell) const {
@@ -196,12 +194,6 @@ struct VTable {
         isValid() && trimmedSize <= origSize &&
         "Growing objects is not supported.");
     return trimmedSize;
-  }
-
-  /// If the cell has any associated external memory, return the size (in bytes)
-  /// of that external memory, else zero.
-  gcheapsize_t externalMemorySize(const GCCell *cell) const {
-    return externalMemorySize_ ? (*externalMemorySize_)(cell) : 0;
   }
 
   /// \return true iff this VTable is valid.

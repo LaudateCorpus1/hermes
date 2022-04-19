@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -29,6 +29,10 @@ print(arr, arr.length);
 var arr = ['a','b',...[1,2,3],'c',...[4,5,6],'d'];
 print(arr, arr.length);
 // CHECK-NEXT: a,b,1,2,3,c,4,5,6,d 10
+
+var arr = [...[1,2,3], ,];
+print(arr, arr.length);
+// CHECK-NEXT: 1,2,3, 4
 
 var arr0 = [1,,3];
 var arr = [...arr0];

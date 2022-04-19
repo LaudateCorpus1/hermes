@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -26,6 +26,8 @@ T *GCBase::makeAFixed(Args &&...args) {
       cellSize<T>() >= minAllocationSize() &&
           cellSize<T>() <= maxAllocationSize(),
       "Cell size outside legal range.");
+  assert(
+      VTable::getVTable(T::getCellKind())->size && "Cell is not fixed size.");
   return makeA<T, true /* fixedSize */, hasFinalizer, longLived>(
       cellSize<T>(), std::forward<Args>(args)...);
 }
@@ -39,6 +41,9 @@ T *GCBase::makeAVariable(uint32_t size, Args &&...args) {
   // If size is greater than the max, we should OOM.
   assert(
       size >= GC::minAllocationSize() && "Cell size is smaller than minimum");
+  assert(
+      !VTable::getVTable(T::getCellKind())->size &&
+      "Cell is not variable size.");
   return makeA<T, false /* fixedSize */, hasFinalizer, longLived>(
       heapAlignSize(size), std::forward<Args>(args)...);
 }
@@ -52,25 +57,15 @@ template <
 T *GCBase::makeA(uint32_t size, Args &&...args) {
   assert(
       isSizeHeapAligned(size) && "Size must be aligned before reaching here");
+  assert(
+      !!VTable::getVTable(T::getCellKind())->finalize_ ==
+          (hasFinalizer == HasFinalizer::Yes) &&
+      "hasFinalizer should be set iff the cell has a finalizer.");
 #ifdef HERMESVM_GC_RUNTIME
-  T *ptr;
-  // Use static_cast below because we know the actual type of the heap.
-  switch (getKind()) {
-    case GCBase::HeapKind::HADES:
-      ptr = llvh::cast<HadesGC>(this)
-                ->makeA<T, fixedSize, hasFinalizer, longLived>(
-                    size, std::forward<Args>(args)...);
-      break;
-    case GCBase::HeapKind::NCGEN:
-      ptr =
-          llvh::cast<GenGC>(this)->makeA<T, fixedSize, hasFinalizer, longLived>(
-              size, std::forward<Args>(args)...);
-      break;
-    case GCBase::HeapKind::MALLOC:
-      llvm_unreachable(
-          "MallocGC should not be used with the RuntimeGC build config");
-      break;
-  }
+  T *ptr = runtimeGCDispatch([&](auto *gc) {
+    return gc->template makeA<T, fixedSize, hasFinalizer, longLived>(
+        size, std::forward<Args>(args)...);
+  });
 #else
   T *ptr =
       static_cast<GC *>(this)->makeA<T, fixedSize, hasFinalizer, longLived>(
@@ -85,17 +80,25 @@ T *GCBase::makeA(uint32_t size, Args &&...args) {
 #ifdef HERMESVM_GC_RUNTIME
 constexpr uint32_t GCBase::maxAllocationSizeImpl() {
   // Return the lesser of the two GC options' max allowed sizes.
-  return min(HadesGC::maxAllocationSizeImpl(), GenGC::maxAllocationSizeImpl());
+  return std::min({
+#define GC_KIND(kind) kind::maxAllocationSizeImpl(),
+      RUNTIME_GC_KINDS
+#undef GC_KIND
+  });
 }
 
 constexpr uint32_t GCBase::minAllocationSizeImpl() {
   // Return the greater of the two GC options' min allowed sizes.
-  return max(HadesGC::minAllocationSizeImpl(), GenGC::minAllocationSizeImpl());
+  return std::max({
+#define GC_KIND(kind) kind::minAllocationSizeImpl(),
+      RUNTIME_GC_KINDS
+#undef GC_KIND
+  });
 }
 #endif
 
 constexpr uint32_t GCBase::maxAllocationSize() {
-  return min(GC::maxAllocationSizeImpl(), GCCell::maxSize());
+  return std::min(GC::maxAllocationSizeImpl(), GCCell::maxSize());
 }
 
 constexpr uint32_t GCBase::minAllocationSize() {
@@ -128,7 +131,8 @@ inline void GCBase::markCell(GCCell *cell, CellKind kind, Acceptor &acceptor) {
 template <typename Acceptor>
 inline void
 GCBase::markCell(SlotVisitor<Acceptor> &visitor, GCCell *cell, CellKind kind) {
-  visitor.visit(cell, metaTable_[static_cast<size_t>(kind)]);
+  visitor.visit(
+      cell, Metadata::metadataTable[static_cast<size_t>(kind)].offsets);
   markWeakRefsIfNecessary(cell, kind, visitor.acceptor_);
 }
 
@@ -140,7 +144,10 @@ inline void GCBase::markCellWithinRange(
     const char *begin,
     const char *end) {
   visitor.visitWithinRange(
-      cell, metaTable_[static_cast<size_t>(kind)], begin, end);
+      cell,
+      Metadata::metadataTable[static_cast<size_t>(kind)].offsets,
+      begin,
+      end);
   markWeakRefsIfNecessary(cell, kind, visitor.acceptor_);
 }
 
@@ -149,7 +156,10 @@ inline void GCBase::markCellWithNames(
     SlotVisitorWithNames<Acceptor> &visitor,
     GCCell *cell) {
   const CellKind kind = cell->getKind();
-  visitor.visit(cell, metaTable_[static_cast<size_t>(kind)]);
+  visitor.visit(
+      cell,
+      Metadata::metadataTable[static_cast<size_t>(kind)].offsets,
+      Metadata::metadataTable[static_cast<size_t>(kind)].names);
   markWeakRefsIfNecessary(cell, kind, visitor.acceptor_);
 }
 

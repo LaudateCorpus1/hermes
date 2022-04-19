@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -23,11 +23,7 @@ namespace hermes {
 //===----------------------------------------------------------------------===//
 
 template <class Ptr, class USER_iterator> // Predecessor Iterator
-class PredIterator
-    : public std::
-          iterator<std::forward_iterator_tag, Ptr, ptrdiff_t, Ptr *, Ptr *> {
-  typedef std::iterator<std::forward_iterator_tag, Ptr, ptrdiff_t, Ptr *, Ptr *>
-      super;
+class PredIterator {
   typedef PredIterator<Ptr, USER_iterator> Self;
   USER_iterator It;
   USER_iterator ItEnd;
@@ -39,8 +35,11 @@ class PredIterator
   }
 
  public:
-  using pointer = typename super::pointer;
-  using reference = typename super::reference;
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = Ptr;
+  using difference_type = std::ptrdiff_t;
+  using pointer = Ptr *;
+  using reference = Ptr *;
 
   PredIterator() = default;
 

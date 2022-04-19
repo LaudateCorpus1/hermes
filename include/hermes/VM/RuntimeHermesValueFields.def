@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -72,6 +72,7 @@ RUNTIME_HV_FIELD_PROTOTYPE(parseIntFunction)
 RUNTIME_HV_FIELD_PROTOTYPE(parseFloatFunction)
 RUNTIME_HV_FIELD_PROTOTYPE(requireFunction)
 RUNTIME_HV_FIELD_PROTOTYPE(jsErrorStackAccessor)
+RUNTIME_HV_FIELD_PROTOTYPE(callSitePrototype)
 
 // TODO: for Serialization/Deserialization  after global object initialization
 // we record specialCodeBlockDomain_ and create runtimemodule later need to
@@ -84,11 +85,7 @@ RUNTIME_HV_FIELD_INSTANCE(thrownValue_)
 RUNTIME_HV_FIELD_INSTANCE(debuggerInternalObject_)
 #endif // HERMES_ENABLE_DEBUGGER
 
-#ifdef HERMESVM_SERIALIZE
-RUNTIME_HV_FIELD_INSTANCE(serializeClosure)
-#endif
-
-#ifdef HERMES_PLATFORM_INTL
+#ifdef HERMES_ENABLE_INTL
 // TODO T65916424: move these out of Runtime
 RUNTIME_HV_FIELD_INSTANCE(intlCollator)
 RUNTIME_HV_FIELD_PROTOTYPE(intlCollatorPrototype)

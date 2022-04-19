@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -23,7 +23,6 @@ const VTable ArrayStorageBase<HVType>::vt(
     nullptr,
     nullptr,
     _trimSizeCallback,
-    nullptr,
     VTable::HeapSnapshotMetadata{
         HeapSnapshot::NodeType::Array,
         nullptr,
@@ -44,73 +43,10 @@ void ArrayStorageSmallBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
       "storage", self->data(), &self->size_, sizeof(GCSmallHermesValue));
 }
 
-#ifdef HERMESVM_SERIALIZE
-void ArrayStorageSerialize(Serializer &s, const GCCell *cell) {
-  auto self = vmcast<const ArrayStorage>(cell);
-  s.writeInt<ArrayStorage::size_type>(self->capacity());
-  s.writeInt<ArrayStorage::size_type>(self->size());
-
-  for (ArrayStorage::size_type i = 0; i < self->size(); i++) {
-    s.writeHermesValue(self->at(i));
-  }
-  s.endObject(cell);
-}
-
-void ArrayStorageDeserialize(Deserializer &d, CellKind kind) {
-  assert(kind == CellKind::ArrayStorageKind && "Expected ArrayStorage");
-  const uint32_t capacity = d.readInt<ArrayStorage::size_type>();
-  assert(capacity <= ArrayStorage::maxElements() && "invalid capacity");
-  const auto allocSize = ArrayStorage::allocationSize(capacity);
-  auto *cell = d.getRuntime()->makeAVariable<ArrayStorage>(
-      allocSize, &d.getRuntime()->getHeap(), allocSize);
-  assert(cell->size() <= capacity && "size cannot be greater than capacity");
-  cell->size_.store(
-      d.readInt<ArrayStorage::size_type>(), std::memory_order_release);
-
-  for (ArrayStorage::size_type i = 0; i < cell->size(); i++)
-    d.readHermesValue(&cell->data()[i]);
-
-  d.endObject(cell);
-}
-
-void ArrayStorageSmallSerialize(Serializer &s, const GCCell *cell) {
-  auto self = vmcast<const ArrayStorageSmall>(cell);
-  s.writeInt<ArrayStorageSmall::size_type>(self->capacity());
-  s.writeInt<ArrayStorageSmall::size_type>(self->size());
-
-  for (ArrayStorageSmall::size_type i = 0; i < self->size(); i++)
-    s.writeSmallHermesValue(self->at(i));
-
-  s.endObject(cell);
-}
-
-void ArrayStorageSmallDeserialize(Deserializer &d, CellKind kind) {
-  assert(
-      kind == CellKind::ArrayStorageSmallKind && "Expected ArrayStorageSmall");
-  const uint32_t capacity = d.readInt<ArrayStorageSmall::size_type>();
-  assert(capacity <= ArrayStorageSmall::maxElements() && "invalid capacity");
-  const auto allocSize = ArrayStorageSmall::allocationSize(capacity);
-  auto *cell = d.getRuntime()->makeAVariable<ArrayStorageSmall>(
-      allocSize, &d.getRuntime()->getHeap(), allocSize);
-  assert(cell->size() <= capacity && "size cannot be greater than capacity");
-  cell->size_.store(
-      d.readInt<ArrayStorageSmall::size_type>(), std::memory_order_release);
-
-  for (ArrayStorageSmall::size_type i = 0; i < cell->size(); i++)
-    d.readSmallHermesValue(&cell->data()[i]);
-
-  d.endObject(cell);
-}
-#endif
-
-template <typename HVType>
-ArrayStorageBase<HVType>::ArrayStorageBase(GC *gc, uint32_t allocSize)
-    : VariableSizeRuntimeCell(gc, &vt, allocSize) {}
-
 template <typename HVType>
 ExecutionStatus ArrayStorageBase<HVType>::ensureCapacity(
     MutableHandle<ArrayStorageBase<HVType>> &selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     size_type capacity) {
   assert(capacity <= maxElements() && "capacity overflows 32-bit storage");
 
@@ -124,7 +60,7 @@ ExecutionStatus ArrayStorageBase<HVType>::ensureCapacity(
 template <typename HVType>
 ExecutionStatus ArrayStorageBase<HVType>::reallocateToLarger(
     MutableHandle<ArrayStorageBase<HVType>> &selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     size_type capacity,
     size_type fromFirst,
     size_type toFirst,
@@ -139,7 +75,7 @@ ExecutionStatus ArrayStorageBase<HVType>::reallocateToLarger(
   if (LLVM_UNLIKELY(arrRes == ExecutionStatus::EXCEPTION)) {
     return ExecutionStatus::EXCEPTION;
   }
-  auto newSelfHandle = runtime->makeHandle<ArrayStorageBase<HVType>>(*arrRes);
+  auto newSelfHandle = runtime.makeHandle<ArrayStorageBase<HVType>>(*arrRes);
 
   auto *newSelf = newSelfHandle.get();
 
@@ -150,8 +86,7 @@ ExecutionStatus ArrayStorageBase<HVType>::reallocateToLarger(
   {
     GCHVType *from = self->data() + fromFirst;
     GCHVType *to = newSelf->data() + toFirst;
-    GCHVType::uninitialized_copy(
-        from, from + copySize, to, &runtime->getHeap());
+    GCHVType::uninitialized_copy(from, from + copySize, to, runtime.getHeap());
   }
 
   // Initialize the elements before the first copied element.
@@ -159,7 +94,7 @@ ExecutionStatus ArrayStorageBase<HVType>::reallocateToLarger(
       newSelf->data(),
       newSelf->data() + toFirst,
       HVType::encodeEmptyValue(),
-      &runtime->getHeap());
+      runtime.getHeap());
 
   // Initialize the elements after the last copied element and toLast.
   if (toFirst + copySize < toLast) {
@@ -167,7 +102,7 @@ ExecutionStatus ArrayStorageBase<HVType>::reallocateToLarger(
         newSelf->data() + toFirst + copySize,
         newSelf->data() + toLast,
         HVType::encodeEmptyValue(),
-        &runtime->getHeap());
+        runtime.getHeap());
   }
 
   newSelf->size_.store(toLast, std::memory_order_release);
@@ -181,7 +116,7 @@ ExecutionStatus ArrayStorageBase<HVType>::reallocateToLarger(
 template <typename HVType>
 void ArrayStorageBase<HVType>::resizeWithinCapacity(
     ArrayStorageBase<HVType> *self,
-    GC *gc,
+    GC &gc,
     size_type newSize) {
   assert(
       newSize <= self->capacity() &&
@@ -214,7 +149,7 @@ void ArrayStorageBase<HVType>::resizeWithinCapacity(
 template <typename HVType>
 ExecutionStatus ArrayStorageBase<HVType>::shift(
     MutableHandle<ArrayStorageBase<HVType>> &selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     size_type fromFirst,
     size_type toFirst,
     size_type toLast) {
@@ -233,7 +168,7 @@ ExecutionStatus ArrayStorageBase<HVType>::shift(
           self->data() + fromFirst,
           self->data() + fromFirst + copySize,
           self->data() + toFirst,
-          &runtime->getHeap());
+          runtime.getHeap());
     } else if (fromFirst < toFirst) {
       // Copying to the right, need to copy backwards to avoid overwriting what
       // is being copied.
@@ -241,7 +176,7 @@ ExecutionStatus ArrayStorageBase<HVType>::shift(
           self->data() + fromFirst,
           self->data() + fromFirst + copySize,
           self->data() + toFirst + copySize,
-          &runtime->getHeap());
+          runtime.getHeap());
     }
 
     // Initialize the elements which were emptied in front.
@@ -249,7 +184,7 @@ ExecutionStatus ArrayStorageBase<HVType>::shift(
         self->data(),
         self->data() + toFirst,
         HVType::encodeEmptyValue(),
-        &runtime->getHeap());
+        runtime.getHeap());
 
     // Initialize the elements between the last copied element and toLast.
     if (toFirst + copySize < toLast) {
@@ -257,14 +192,14 @@ ExecutionStatus ArrayStorageBase<HVType>::shift(
           self->data() + toFirst + copySize,
           self->data() + toLast,
           HVType::encodeEmptyValue(),
-          &runtime->getHeap());
+          runtime.getHeap());
     }
     if (toLast < self->size()) {
       // Some elements are becoming unreachable, let the GC know.
       GCHVType::rangeUnreachableWriteBarrier(
           self->data() + toLast,
           self->data() + self->size(),
-          &runtime->getHeap());
+          runtime.getHeap());
     }
     self->size_.store(toLast, std::memory_order_release);
     return ExecutionStatus::RETURNED;
@@ -283,15 +218,15 @@ ExecutionStatus ArrayStorageBase<HVType>::shift(
 
 template <typename HVType>
 ExecutionStatus ArrayStorageBase<HVType>::throwExcessiveCapacityError(
-    Runtime *runtime,
+    Runtime &runtime,
     size_type capacity) {
   assert(
       capacity > maxElements() &&
       "Shouldn't call this without first checking that capacity is big");
   // Record the fact that this error occurred.
-  HERMES_EXTRA_DEBUG(runtime->getCrashManager().setCustomData(
+  HERMES_EXTRA_DEBUG(runtime.getCrashManager().setCustomData(
       "Hermes_ArrayStorage_overflow", "1"));
-  return runtime->raiseRangeError(
+  return runtime.raiseRangeError(
       TwineChar16(
           "Requested an array size larger than the max allowable: Requested elements = ") +
       capacity + ", max elements = " + maxElements());
@@ -300,14 +235,14 @@ ExecutionStatus ArrayStorageBase<HVType>::throwExcessiveCapacityError(
 template <typename HVType>
 ExecutionStatus ArrayStorageBase<HVType>::pushBackSlowPath(
     MutableHandle<ArrayStorageBase<HVType>> &selfHandle,
-    Runtime *runtime,
+    Runtime &runtime,
     Handle<> value) {
   const auto size = selfHandle->size();
   if (resize(selfHandle, runtime, size + 1) == ExecutionStatus::EXCEPTION) {
     return ExecutionStatus::EXCEPTION;
   }
   auto hv = HVType::encodeHermesValue(*value, runtime);
-  selfHandle->set(size, hv, &runtime->getHeap());
+  selfHandle->set(size, hv, runtime.getHeap());
   return ExecutionStatus::RETURNED;
 }
 
