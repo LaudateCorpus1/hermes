@@ -99,6 +99,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "flow_native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "command_line",
+ "juno",
+ "juno_pass",
+ "juno_support",
+ "lit",
+ "toml",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -186,6 +200,7 @@ name = "juno_eval"
 version = "0.1.0"
 dependencies = [
  "juno_ast",
+ "juno_support",
  "num",
 ]
 

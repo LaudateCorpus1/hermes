@@ -14,7 +14,7 @@ fn run_lit_tests() {
     Command::new(lit)
         .arg("-sv")
         .arg("--param")
-        .arg("test_exec_root=../../target/lit")
+        .arg("test_exec_root=../../target/lit/juno")
         .arg("--param")
         .arg(format!(
             "juno={}",
@@ -22,7 +22,7 @@ fn run_lit_tests() {
         ))
         .arg("--param")
         .arg(format!("FileCheck={}", lit::filecheck_path()))
-        .arg(format!("{}/../../lit/", env!("CARGO_MANIFEST_DIR")))
+        .arg(format!("{}/../../lit/juno", env!("CARGO_MANIFEST_DIR")))
         .assert()
         .success();
 }

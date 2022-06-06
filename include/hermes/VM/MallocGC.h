@@ -9,6 +9,7 @@
 #define HERMES_VM_MALLOCGC_H
 
 #include "hermes/Public/GCConfig.h"
+#include "hermes/VM/CompressedPointer.h"
 #include "hermes/VM/GCBase.h"
 #include "hermes/VM/GCCell.h"
 #include "hermes/VM/VMExperiments.h"
@@ -239,7 +240,6 @@ class MallocGC final : public GCBase {
   void snapshotWriteBarrierRange(const GCHermesValue *, uint32_t) {}
   void snapshotWriteBarrierRange(const GCSmallHermesValue *, uint32_t) {}
   void weakRefReadBarrier(GCCell *) {}
-  void weakRefReadBarrier(HermesValue) {}
 
   void getHeapInfo(HeapInfo &info) override;
   void getHeapInfoWithMallocSize(HeapInfo &info) override;
@@ -251,7 +251,7 @@ class MallocGC final : public GCBase {
 
   /// Allocate a weak pointer slot for the value given.
   /// \pre \p init should not be empty or a native value.
-  WeakRefSlot *allocWeakSlot(HermesValue init) override;
+  WeakRefSlot *allocWeakSlot(CompressedPointer ptr) override;
 
   /// The largest the size of this heap could ever grow to.
   size_t maxSize() const {

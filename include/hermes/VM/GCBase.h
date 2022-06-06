@@ -19,6 +19,7 @@
 #include "hermes/VM/AllocOptions.h"
 #include "hermes/VM/BuildMetadata.h"
 #include "hermes/VM/CellKind.h"
+#include "hermes/VM/CompressedPointer.h"
 #include "hermes/VM/GCDecl.h"
 #include "hermes/VM/GCExecTrace.h"
 #include "hermes/VM/GCPointer.h"
@@ -167,8 +168,7 @@ class GCCell;
 ///   A weak ref is about to be read. Executes a read barrier so the GC can
 ///   take action such as extending the lifetime of the reference. The
 ///   HermesValue version does nothing if the value isn't a pointer.
-///     void weakRefReadBarrier(void *value);
-///     void weakRefReadBarrier(HermesValue value);
+///     void weakRefReadBarrier(GCCell *value);
 ///
 ///   We copied HermesValues into the given region.  Note that \p numHVs is
 ///   the number of HermesValues in the the range, not the char length.
@@ -939,7 +939,7 @@ class GCBase {
     return true;
   }
 
-  virtual WeakRefSlot *allocWeakSlot(HermesValue init) = 0;
+  virtual WeakRefSlot *allocWeakSlot(CompressedPointer ptr) = 0;
 
 #ifndef NDEBUG
   /// \name Debug APIs
@@ -1035,7 +1035,6 @@ class GCBase {
       const GCSmallHermesValue *start,
       uint32_t numHVs);
   void weakRefReadBarrier(GCCell *value);
-  void weakRefReadBarrier(HermesValue value);
 #endif
 
 #ifndef NDEBUG
@@ -1334,6 +1333,11 @@ class GCBase {
   /// initialization, using the context provided then (on this heap).
   void markWeakRoots(WeakRootAcceptor &acceptor, bool markLongLived) {
     gcCallbacks_.markWeakRoots(acceptor, markLongLived);
+    acceptor.beginRootSection(RootAcceptor::Section::WeakRefSlots);
+    for (auto &slot : weakSlots_) {
+      slot.markWeakRoots(acceptor);
+    }
+    acceptor.endRootSection();
   }
 
   /// Print the cumulative statistics.

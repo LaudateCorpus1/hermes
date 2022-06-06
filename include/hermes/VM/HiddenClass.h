@@ -162,15 +162,15 @@ class TransitionMap {
         (isLarge() && large()->containsKey(key));
   }
 
-  /// Look for key and return the value as Handle<T> if found or None if not.
-  llvh::Optional<Handle<HiddenClass>>
-  lookup(HandleRootOwner &runtime, GC &gc, const Transition &key) {
+  /// Look for a \p key and return the corresponding HiddenClass, or nullptr if
+  /// it is not found.
+  HiddenClass *lookup(Runtime &runtime, const Transition &key) {
     if (smallKey_ == key) {
-      return smallValue().get(runtime, gc);
+      return smallValue().get(runtime);
     } else if (isLarge()) {
-      return large()->lookup(runtime, gc, key);
+      return large()->lookup(runtime, key);
     } else {
-      return llvh::None;
+      return nullptr;
     }
   }
 
@@ -190,12 +190,12 @@ class TransitionMap {
     WeakRefLock lk{runtime.getHeap().weakRefMutex()};
     if (isClean()) {
       smallKey_ = key;
-      smallValue() = WeakRef<HiddenClass>(runtime.getHeap(), value);
+      smallValue() = WeakRef<HiddenClass>(runtime, value);
       return true;
     }
     if (!isLarge())
       uncleanMakeLarge(runtime);
-    return large()->insertNewLocked(runtime.getHeap(), key, value);
+    return large()->insertNewLocked(runtime, key, value);
   }
 
   /// Insert key/value into the map. Used by deserialization.

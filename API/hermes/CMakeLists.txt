@@ -24,7 +24,7 @@ target_include_directories(hermesapiLean PUBLIC ..)
 add_hermes_library(synthTrace hermes_tracing.cpp SynthTrace.cpp TracingRuntime.cpp
   LINK_LIBS hermesapi)
 
-add_hermes_library(timerStats TimerStats.cpp LINK_LIBS hermesapi)
+add_hermes_library(timerStats TimerStats.cpp LINK_LIBS jsi hermesSupport)
 
 add_hermes_library(traceInterpreter TraceInterpreter.cpp
   LINK_LIBS hermesapi hermesInstrumentation synthTrace synthTraceParser)
@@ -56,13 +56,14 @@ if(HERMES_BUILD_LEAN_LIBHERMES)
 endif()
 
 target_link_libraries(libhermes
+  PRIVATE
   jsi
   ${LIBHERMES_VM_DEP}
 )
 target_link_options(libhermes PRIVATE ${HERMES_EXTRA_LINKER_FLAGS})
 
 # Export the required header directory
-target_include_directories(libhermes PUBLIC ..)
+target_include_directories(libhermes PUBLIC .. ${HERMES_JSI_DIR})
 
 set_target_properties(libhermes PROPERTIES
   # Avoid becoming liblibhermes (and there's already a target called 'hermes')
