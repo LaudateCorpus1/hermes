@@ -24,6 +24,7 @@ const NODES_WITH_SPECIAL_HANDLING = new Set([
   'ArrowFunctionExpression',
   'BigIntLiteral',
   'BooleanLiteral',
+  'ClassDeclaration',
   'Identifier',
   'NullLiteral',
   'NumericLiteral',
@@ -54,7 +55,7 @@ export function ${node.name}({
   parent,
 }: {
   +parent?: ESNode,
-} = {}): DetachedNode<${node.name}Type> {
+} = {...null}): DetachedNode<${node.name}Type> {
   return detachedProps<${node.name}Type>(parent, {
     type: '${type}',
   });

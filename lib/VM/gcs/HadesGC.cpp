@@ -47,10 +47,9 @@ HadesGC::HeapSegment::HeapSegment(AlignedStorage storage)
   growToLimit();
 }
 
-GCCell *
-HadesGC::OldGen::finishAlloc(GCCell *cell, uint32_t sz, uint16_t segmentIdx) {
+GCCell *HadesGC::OldGen::finishAlloc(GCCell *cell, uint32_t sz) {
   // Track the number of allocated bytes in a segment.
-  incrementAllocatedBytes(sz, segmentIdx);
+  incrementAllocatedBytes(sz);
   // Write a mark bit so this entry doesn't get free'd by the sweeper.
   HeapSegment::setCellMarkBit(cell);
   // Could overwrite the VTable, but the allocator will write a new one in
@@ -148,29 +147,6 @@ HadesGC::OldGen::FreelistCell *HadesGC::OldGen::removeCellFromFreelist(
   __asan_unpoison_memory_region(
       cell + 1, cell->getAllocatedSize() - sizeof(FreelistCell));
   return cell;
-}
-
-void HadesGC::OldGen::eraseSegmentFreelists(size_t segmentIdx) {
-  for (size_t bucket = 0; bucket < kNumFreelistBuckets; ++bucket) {
-    freelistBucketSegmentBitArray_[bucket].reset(segmentIdx);
-    auto iter = freelistBucketSegmentBitArray_[bucket].begin();
-    auto endIter = freelistBucketSegmentBitArray_[bucket].end();
-    while (iter != endIter && *iter <= segmentIdx)
-      iter++;
-
-    // Move all the set bits after segmentIdx down by 1.
-    while (iter != endIter) {
-      // Increment the iterator before manipulating values because the
-      // manipulation may invalidate our current iterator.
-      size_t idx = *iter++;
-      freelistBucketSegmentBitArray_[bucket].set(idx - 1);
-      freelistBucketSegmentBitArray_[bucket].reset(idx);
-    }
-
-    freelistBucketBitArray_.set(
-        bucket, !freelistBucketSegmentBitArray_[bucket].empty());
-  }
-  freelistSegmentsBuckets_.erase(freelistSegmentsBuckets_.begin() + segmentIdx);
 }
 
 /* static */
@@ -404,7 +380,7 @@ class HadesGC::EvacAcceptor final : public RootAndSlotAcceptor,
         copyListHead_{nullptr},
         isTrackingIDs_{gc.isTrackingIDs()} {}
 
-  ~EvacAcceptor() {}
+  ~EvacAcceptor() override {}
 
   // TODO: Implement a purely CompressedPointer version of this. That will let
   // us avoid decompressing pointers altogether if they point outside the
@@ -1108,7 +1084,6 @@ bool HadesGC::OldGen::sweepNext(bool backgroundThread) {
 
   sweepIterator_.segNumber--;
 
-  gc_.oldGen_.updatePeakAllocatedBytes(sweepIterator_.segNumber);
   const bool isTracking = gc_.isTrackingIDs();
   // Re-evaluate this start point each time, as releasing the gcMutex_ allows
   // allocations into the old gen, which might boost the credited memory.
@@ -1209,7 +1184,7 @@ bool HadesGC::OldGen::sweepNext(bool backgroundThread) {
   }
 
   // Correct the allocated byte count.
-  incrementAllocatedBytes(-segmentSweptBytes, sweepIterator_.segNumber);
+  incrementAllocatedBytes(-segmentSweptBytes);
   sweepIterator_.sweptBytes += segmentSweptBytes;
   sweepIterator_.sweptExternalBytes += externalBytesBefore - externalBytes();
 
@@ -1248,8 +1223,6 @@ size_t HadesGC::OldGen::sweepSegmentsRemaining() const {
 
 size_t HadesGC::OldGen::getMemorySize() const {
   size_t memorySize = segments_.size() * sizeof(HeapSegment);
-  memorySize +=
-      segmentAllocatedBytes_.capacity() * sizeof(std::pair<uint32_t, uint32_t>);
   memorySize += freelistSegmentsBuckets_.capacity() *
       sizeof(std::array<FreelistCell *, kNumFreelistBuckets>);
   memorySize +=
@@ -1350,6 +1323,7 @@ void HadesGC::getCrashManagerHeapInfo(
   crashInfo.used_ = info.allocatedBytes;
 }
 
+#ifdef HERMES_MEMORY_INSTRUMENTATION
 void HadesGC::createSnapshot(llvh::raw_ostream &os) {
   std::lock_guard<Mutex> lk{gcMutex_};
   // No allocations are allowed throughout the entire heap snapshot process.
@@ -1434,6 +1408,7 @@ void HadesGC::disableSamplingHeapProfiler(llvh::raw_ostream &os) {
   waitForCollectionToFinish("sampling heap profiler disable");
   GCBase::disableSamplingHeapProfiler(os);
 }
+#endif // HERMES_MEMORY_INSTRUMENTATION
 
 void HadesGC::printStats(JSONEmitter &json) {
   GCBase::printStats(json);
@@ -1709,7 +1684,12 @@ void HadesGC::prepareCompactee(bool forceCompaction) {
   if (promoteYGToOG_)
     return;
 
-  llvh::Optional<size_t> compacteeIdx;
+#ifdef HERMESVM_SANITIZE_HANDLES
+  // Handle-SAN forces a compaction to move some OG objects.
+  if (sanitizeRate_)
+    forceCompaction = true;
+#endif
+
   // To avoid compacting too often, keep a buffer of one segment or 5% of the
   // heap (whichever is greater). Since the selected segment will be removed
   // from the heap, we only want to compact if there are at least 2 segments in
@@ -1720,32 +1700,7 @@ void HadesGC::prepareCompactee(bool forceCompaction) {
   uint64_t totalBytes = oldGen_.size() + oldGen_.externalBytes();
   if ((forceCompaction || totalBytes > threshold) &&
       oldGen_.numSegments() > 1) {
-    // Select the one with the fewest allocated bytes, to
-    // minimise scanning and copying. We intentionally avoid selecting the very
-    // last segment, since that is going to be the most recently added segment
-    // and is unlikely to be fragmented enough to be a good compaction
-    // candidate.
-    uint64_t minBytes = HeapSegment::maxSize();
-    for (size_t i = 0; i < oldGen_.numSegments() - 1; ++i) {
-      const size_t curBytes = oldGen_.allocatedBytes(i);
-      if (curBytes < minBytes) {
-        compacteeIdx = i;
-        minBytes = curBytes;
-      }
-    }
-  }
-#ifdef HERMESVM_SANITIZE_HANDLES
-  // Handle-SAN forces a compaction on random segments to move the heap.
-  if (sanitizeRate_ && oldGen_.numSegments()) {
-    std::uniform_int_distribution<> distrib(0, oldGen_.numSegments() - 1);
-    compacteeIdx = distrib(randomEngine_);
-  }
-#endif
-
-  if (compacteeIdx) {
-    compactee_.allocatedBytes = oldGen_.allocatedBytes(*compacteeIdx);
-    compactee_.segment =
-        std::make_shared<HeapSegment>(oldGen_.removeSegment(*compacteeIdx));
+    compactee_.segment = std::make_shared<HeapSegment>(oldGen_.popSegment());
     addSegmentExtentToCrashManager(
         *compactee_.segment, kCompacteeNameForCrashMgr);
     compactee_.start = compactee_.segment->lowLim();
@@ -1754,6 +1709,43 @@ void HadesGC::prepareCompactee(bool forceCompaction) {
         getPointerBase());
     compacteeHandleForSweep_ = compactee_.segment;
   }
+}
+
+void HadesGC::finalizeCompactee() {
+  char *stop = compactee_.segment->level();
+  char *cur = compactee_.segment->start();
+  PointerBase &base = getPointerBase();
+  // Calculate the total number of bytes that were allocated in the compactee at
+  // the start of compaction.
+  int32_t preAllocated = 0;
+  while (cur < stop) {
+    auto *cell = reinterpret_cast<GCCell *>(cur);
+    if (cell->hasMarkedForwardingPointer()) {
+      auto size = cell->getMarkedForwardingPointer()
+                      .getNonNull(base)
+                      ->getAllocatedSize();
+      preAllocated += size;
+      cur += size;
+    } else {
+      auto size = cell->getAllocatedSize();
+      if (!vmisa<OldGen::FreelistCell>(cell)) {
+        cell->getVT()->finalizeIfExists(cell, *this);
+        preAllocated += size;
+      }
+      cur += size;
+    }
+  }
+  // At this point, any cells that survived compaction are already accounted for
+  // separately in the counter, so we just need to subtract the number of bytes
+  // allocated in the compactee.
+  oldGen_.incrementAllocatedBytes(-preAllocated);
+
+  const size_t segIdx =
+      SegmentInfo::segmentIndexFromStart(compactee_.segment->lowLim());
+  segmentIndices_.push_back(segIdx);
+  removeSegmentExtentFromCrashManager(std::to_string(segIdx));
+  removeSegmentExtentFromCrashManager(kCompacteeNameForCrashMgr);
+  compactee_ = {};
 }
 
 void HadesGC::updateOldGenThreshold() {
@@ -1766,8 +1758,7 @@ void HadesGC::updateOldGenThreshold() {
   const double markedBytes = oldGenMarker_->markedBytes();
   const double preAllocated = ogCollectionStats_->beforeAllocatedBytes();
   assert(markedBytes <= preAllocated && "Cannot mark more than was allocated");
-  const double postAllocated =
-      oldGen_.allocatedBytes() + compactee_.allocatedBytes;
+  const double postAllocated = oldGen_.allocatedBytes();
   assert(postAllocated >= preAllocated && "Cannot free memory during marking");
 
   // Calculate the number of bytes marked for each byte allocated into the old
@@ -2299,7 +2290,7 @@ GCCell *HadesGC::OldGen::search(uint32_t sz) {
       assert(
           cell->getAllocatedSize() == sz &&
           "Size bucket should be an exact match");
-      return finishAlloc(cell, sz, segmentIdx);
+      return finishAlloc(cell, sz);
     }
     // Make sure we start searching at the smallest possible size that could fit
     bucket = getFreelistBucket(sz + minAllocationSize());
@@ -2319,7 +2310,7 @@ GCCell *HadesGC::OldGen::search(uint32_t sz) {
       AssignableCompressedPointer cellCP =
           freelistSegmentsBuckets_[segmentIdx][bucket];
 
-      while (cellCP) {
+      do {
         auto *cell =
             vmcast<FreelistCell>(cellCP.getNonNull(gc_.getPointerBase()));
         assert(
@@ -2349,11 +2340,11 @@ GCCell *HadesGC::OldGen::search(uint32_t sz) {
           // freelist, newCell is still poisoned (regardless of whether the
           // conditional above executed). Unpoison it.
           __asan_unpoison_memory_region(newCell, sz);
-          return finishAlloc(newCell, sz, segmentIdx);
+          return finishAlloc(newCell, sz);
         } else if (cellSize == sz) {
           // Exact match, take it.
           removeCellFromFreelist(prevLoc, bucket, segmentIdx);
-          return finishAlloc(cell, sz, segmentIdx);
+          return finishAlloc(cell, sz);
         }
         // Non-exact matches, or anything just barely too small to fit, will
         // need to find another block.
@@ -2367,7 +2358,7 @@ GCCell *HadesGC::OldGen::search(uint32_t sz) {
         // in the heap. That's not true in debug modes currently.
         prevLoc = &cell->next_;
         cellCP = cell->next_;
-      }
+      } while (cellCP);
     }
   }
   return nullptr;
@@ -2485,28 +2476,21 @@ void HadesGC::youngGenCollection(
 
     if (doCompaction) {
       ygCollectionStats_->addCollectionType("compact");
-      heapBytes.before += compactee_.allocatedBytes;
+      // We can use the total amount of external memory in the OG before and
+      // after running finalizers to measure how much external memory has been
+      // released.
       uint64_t ogExternalBefore = oldGen_.externalBytes();
-      // Run finalisers on compacted objects.
-      compactee_.segment->forCompactedObjs(
-          [this](GCCell *cell) {
-            cell->getVT()->finalizeIfExists(cell, *this);
-          },
-          getPointerBase());
+      // Similarly, finalizeCompactee will update the allocated bytes counter to
+      // remove bytes allocated in the compactee.
+      uint64_t ogAllocatedBefore = oldGen_.allocatedBytes();
+      finalizeCompactee();
+      heapBytes.before += ogAllocatedBefore - oldGen_.allocatedBytes();
       const uint64_t externalCompactedBytes =
           ogExternalBefore - oldGen_.externalBytes();
       // Since we can't track the actual number of external bytes that were in
       // this segment, just use the swept external byte count.
       externalBytes.before += externalCompactedBytes;
       externalBytes.after += externalCompactedBytes;
-
-      const size_t segIdx =
-          SegmentInfo::segmentIndexFromStart(compactee_.segment->lowLim());
-      segmentIndices_.push_back(segIdx);
-      removeSegmentExtentFromCrashManager(std::to_string(segIdx));
-      removeSegmentExtentFromCrashManager(kCompacteeNameForCrashMgr);
-
-      compactee_ = {};
     }
 
     // Move external memory accounting from YG to OG as well.
@@ -2856,7 +2840,8 @@ uint64_t HadesGC::externalBytes() const {
 }
 
 uint64_t HadesGC::segmentFootprint() const {
-  size_t totalSegments = oldGen_.numSegments() + (youngGen_ ? 1 : 0);
+  size_t totalSegments = oldGen_.numSegments() + (youngGen_ ? 1 : 0) +
+      (compactee_.segment ? 1 : 0);
   return totalSegments * AlignedStorage::size();
 }
 
@@ -2868,30 +2853,9 @@ uint64_t HadesGC::OldGen::allocatedBytes() const {
   return allocatedBytes_;
 }
 
-uint64_t HadesGC::OldGen::allocatedBytes(uint16_t segmentIdx) const {
-  return segmentAllocatedBytes_[segmentIdx].first;
-}
-
-uint64_t HadesGC::OldGen::peakAllocatedBytes(uint16_t segmentIdx) const {
-  return segmentAllocatedBytes_[segmentIdx].second;
-}
-
-void HadesGC::OldGen::incrementAllocatedBytes(
-    int32_t incr,
-    uint16_t segmentIdx) {
-  assert(segmentIdx < numSegments());
+void HadesGC::OldGen::incrementAllocatedBytes(int32_t incr) {
   allocatedBytes_ += incr;
-  segmentAllocatedBytes_[segmentIdx].first += incr;
-  assert(
-      allocatedBytes_ <= size() &&
-      segmentAllocatedBytes_[segmentIdx].first <= HeapSegment::maxSize() &&
-      "Invalid increment");
-}
-
-void HadesGC::OldGen::updatePeakAllocatedBytes(uint16_t segmentIdx) {
-  segmentAllocatedBytes_[segmentIdx].second = std::max(
-      segmentAllocatedBytes_[segmentIdx].second,
-      segmentAllocatedBytes_[segmentIdx].first);
+  assert(allocatedBytes_ <= size() && "Invalid increment");
 }
 
 uint64_t HadesGC::OldGen::externalBytes() const {
@@ -2900,7 +2864,8 @@ uint64_t HadesGC::OldGen::externalBytes() const {
 }
 
 uint64_t HadesGC::OldGen::size() const {
-  return numSegments() * HeapSegment::maxSize();
+  size_t totalSegments = numSegments() + (gc_.compactee_.segment ? 1 : 0);
+  return totalSegments * HeapSegment::maxSize();
 }
 
 uint64_t HadesGC::OldGen::targetSizeBytes() const {
@@ -2993,11 +2958,9 @@ llvh::ErrorOr<HadesGC::HeapSegment> HadesGC::createSegment() {
 }
 
 void HadesGC::OldGen::addSegment(HeapSegment seg) {
-  uint16_t newSegIdx = segments_.size();
   segments_.emplace_back(std::move(seg));
-  segmentAllocatedBytes_.push_back({0, 0});
   HeapSegment &newSeg = segments_.back();
-  incrementAllocatedBytes(newSeg.used(), newSegIdx);
+  incrementAllocatedBytes(newSeg.used());
   // Add a set of freelist buckets for this segment.
   freelistSegmentsBuckets_.emplace_back();
   assert(
@@ -3015,13 +2978,17 @@ void HadesGC::OldGen::addSegment(HeapSegment seg) {
   gc_.addSegmentExtentToCrashManager(newSeg, std::to_string(numSegments()));
 }
 
-HadesGC::HeapSegment HadesGC::OldGen::removeSegment(size_t segmentIdx) {
-  assert(segmentIdx < segments_.size());
-  eraseSegmentFreelists(segmentIdx);
-  allocatedBytes_ -= segmentAllocatedBytes_[segmentIdx].first;
-  segmentAllocatedBytes_.erase(segmentAllocatedBytes_.begin() + segmentIdx);
-  auto oldSeg = std::move(segments_[segmentIdx]);
-  segments_.erase(segments_.begin() + segmentIdx);
+HadesGC::HeapSegment HadesGC::OldGen::popSegment() {
+  size_t segmentIdx = segments_.size() - 1;
+  for (size_t bucket = 0; bucket < kNumFreelistBuckets; ++bucket) {
+    freelistBucketSegmentBitArray_[bucket].reset(segmentIdx);
+    freelistBucketBitArray_.set(
+        bucket, !freelistBucketSegmentBitArray_[bucket].empty());
+  }
+  freelistSegmentsBuckets_.pop_back();
+
+  auto oldSeg = std::move(segments_.back());
+  segments_.pop_back();
   return oldSeg;
 }
 

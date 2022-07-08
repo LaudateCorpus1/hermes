@@ -33,7 +33,6 @@
 #include "hermes/VM/PropertyDescriptor.h"
 #include "hermes/VM/RegExpMatch.h"
 #include "hermes/VM/RuntimeModule.h"
-#include "hermes/VM/RuntimeStats.h"
 #include "hermes/VM/StackFrame.h"
 #include "hermes/VM/StackTracesTree-NoRuntime.h"
 #include "hermes/VM/SymbolRegistry.h"
@@ -194,13 +193,13 @@ using CrashTrace = CrashTraceNoop;
 
 /// The Runtime encapsulates the entire context of a VM. Multiple instances can
 /// exist and are completely independent from each other.
-class Runtime : public HandleRootOwner,
-                public PointerBase,
+class Runtime : public PointerBase,
+                public HandleRootOwner,
                 private GCBase::GCCallbacks {
  public:
   static std::shared_ptr<Runtime> create(const RuntimeConfig &runtimeConfig);
 
-  ~Runtime();
+  ~Runtime() override;
 
   /// Add a custom function that will be executed at the start of every garbage
   /// collection to mark additional GC roots that may not be known to the
@@ -562,12 +561,6 @@ class Runtime : public HandleRootOwner,
   /// Returns trailing data for all runtime modules.
   std::vector<llvh::ArrayRef<uint8_t>> getEpilogues();
 
-  /// \return the set of runtime stats.
-  instrumentation::RuntimeStats &getRuntimeStats() {
-    return runtimeStats_;
-  }
-
-  /// Print the heap and other misc. stats to the given stream.
   void printHeapStats(llvh::raw_ostream &os);
 
   /// Write IO tracking (aka HBC page access) info to the supplied
@@ -852,6 +845,10 @@ class Runtime : public HandleRootOwner,
     return hasIntl_;
   }
 
+  bool hasArrayBuffer() const {
+    return hasArrayBuffer_;
+  }
+
   bool useJobQueue() const {
     return getVMExperimentFlags() & experiments::JobQueue;
   }
@@ -1117,6 +1114,9 @@ class Runtime : public HandleRootOwner,
   /// Set to true if we should enable ECMA-402 Intl APIs.
   const bool hasIntl_;
 
+  /// Set to true if we should enable ArrayBuffer, DataView and typed arrays.
+  const bool hasArrayBuffer_;
+
   /// Set to true if we should randomize stack placement etc.
   const bool shouldRandomizeMemoryLayout_;
 
@@ -1168,9 +1168,6 @@ class Runtime : public HandleRootOwner,
 
   /// The global symbol registry.
   SymbolRegistry symbolRegistry_{};
-
-  /// Set of runtime statistics.
-  instrumentation::RuntimeStats runtimeStats_;
 
   /// Shared location to place native objects required by JSLib
   std::shared_ptr<RuntimeCommonStorage> commonStorage_;
@@ -1422,6 +1419,7 @@ class Runtime : public HandleRootOwner,
   }
 
  private:
+#ifdef HERMES_MEMORY_INSTRUMENTATION
   /// Given the current last known IP used in the interpreter loop, returns the
   /// last known CodeBlock and IP combination. IP must not be null as this
   /// suggests we're not in the interpter loop, and there will be no CodeBlock
@@ -1464,8 +1462,6 @@ class Runtime : public HandleRootOwner,
     }
   }
 
-  /// Enable allocation location tracking. Only works with
-  /// HERMES_ENABLE_ALLOCATION_LOCATION_TRACES.
   void enableAllocationLocationTracker() {
     enableAllocationLocationTracker(nullptr);
   }
@@ -1497,6 +1493,30 @@ class Runtime : public HandleRootOwner,
   void popCallStackImpl();
   void pushCallStackImpl(const CodeBlock *codeBlock, const inst::Inst *ip);
   std::unique_ptr<StackTracesTree> stackTracesTree_;
+#endif
+};
+
+/// An encrypted/obfuscated native pointer. The key is held by GCBase.
+template <typename T>
+class XorPtr {
+  uintptr_t bits_{0};
+
+ public:
+  XorPtr(Runtime &runtime, T *ptr) {
+    set(runtime, ptr);
+  }
+  void set(Runtime &runtime, T *ptr) {
+    set(runtime.getHeap(), ptr);
+  }
+  void set(GC &gc, T *ptr) {
+    bits_ = reinterpret_cast<uintptr_t>(ptr) ^ gc.pointerEncryptionKey_;
+  }
+  T *get(Runtime &runtime) {
+    return get(runtime.getHeap());
+  }
+  T *get(GC &gc) {
+    return reinterpret_cast<T *>(bits_ ^ gc.pointerEncryptionKey_);
+  }
 };
 
 /// An RAII class for automatically tracking the native call frame depth.
@@ -1681,70 +1701,96 @@ class ScopedNativeCallFrame {
   }
 };
 
-/// RAII class to temporarily disallow allocation.
-/// Enforced by the GC in slow debug mode only.
+#ifdef NDEBUG
+
+/// NoAllocScope and NoHandleScope have no impact in release mode (except that
+/// if they are embedded into another struct/class, they will still use space!)
 class NoAllocScope {
  public:
-#ifdef NDEBUG
   explicit NoAllocScope(Runtime &runtime) {}
   explicit NoAllocScope(GC &gc) {}
   NoAllocScope(const NoAllocScope &) = default;
   NoAllocScope(NoAllocScope &&) = default;
   NoAllocScope &operator=(const NoAllocScope &) = default;
   NoAllocScope &operator=(NoAllocScope &&rhs) = default;
-
   void release() {}
-#else
-  explicit NoAllocScope(Runtime &runtime) : NoAllocScope(runtime.getHeap()) {}
-  explicit NoAllocScope(GC &gc) : NoAllocScope(&gc.noAllocLevel_) {}
-  NoAllocScope(const NoAllocScope &other) : NoAllocScope(other.noAllocLevel_) {}
-  NoAllocScope(NoAllocScope &&other) : noAllocLevel_(other.noAllocLevel_) {
-    // not a release operation as this inherits the counter from other.
-    other.noAllocLevel_ = nullptr;
-  }
-
-  ~NoAllocScope() {
-    if (noAllocLevel_)
-      release();
-  }
-
-  NoAllocScope &operator=(NoAllocScope &&rhs) {
-    if (noAllocLevel_) {
-      release();
-    }
-
-    // N.B.: to account for cases when this == &rhs, first copy rhs.noAllocLevel
-    // to a temporary, then null it out.
-    auto ptr = rhs.noAllocLevel_;
-    rhs.noAllocLevel_ = nullptr;
-    noAllocLevel_ = ptr;
-    return *this;
-  }
-
-  NoAllocScope &operator=(const NoAllocScope &other) {
-    return *this = NoAllocScope(other.noAllocLevel_);
-  }
-
-  /// End this scope early. May only be called once.
-  void release() {
-    assert(noAllocLevel_ && "already released");
-    assert(*noAllocLevel_ > 0 && "unbalanced no alloc");
-    --*noAllocLevel_;
-    noAllocLevel_ = nullptr;
-  }
-
- private:
-  explicit NoAllocScope(uint32_t *noAllocLevel) : noAllocLevel_(noAllocLevel) {
-    assert(
-        noAllocLevel_ && "constructing NoAllocScope with moved/release object");
-    ++*noAllocLevel_;
-  }
-  uint32_t *noAllocLevel_;
-#endif
 
  private:
   NoAllocScope() = delete;
 };
+using NoHandleScope = NoAllocScope;
+
+#else
+
+/// RAII class to temporarily disallow allocation of something.
+class BaseNoScope {
+ public:
+  explicit BaseNoScope(uint32_t *level) : level_(level) {
+    assert(level_ && "constructing BaseNoScope with moved/release object");
+    ++*level_;
+  }
+
+  BaseNoScope(const BaseNoScope &other) : BaseNoScope(other.level_) {}
+  BaseNoScope(BaseNoScope &&other) : level_(other.level_) {
+    // not a release operation as this inherits the counter from other.
+    other.level_ = nullptr;
+  }
+
+  ~BaseNoScope() {
+    if (level_)
+      release();
+  }
+
+  BaseNoScope &operator=(BaseNoScope &&rhs) {
+    if (level_) {
+      release();
+    }
+
+    // N.B.: to account for cases when this == &rhs, first copy rhs.level_
+    // to a temporary, then null it out.
+    auto ptr = rhs.level_;
+    rhs.level_ = nullptr;
+    level_ = ptr;
+    return *this;
+  }
+
+  BaseNoScope &operator=(const BaseNoScope &other) {
+    return *this = BaseNoScope(other.level_);
+  }
+
+  /// End this scope early. May only be called once.
+  void release() {
+    assert(level_ && "already released");
+    assert(*level_ > 0 && "unbalanced no alloc");
+    --*level_;
+    level_ = nullptr;
+  }
+
+ protected:
+  uint32_t *level_;
+
+ private:
+  BaseNoScope() = delete;
+};
+
+/// RAII class to temporarily disallow handle creation.
+class NoHandleScope : public BaseNoScope {
+ public:
+  explicit NoHandleScope(Runtime &runtime)
+      : BaseNoScope(&runtime.noHandleLevel_) {}
+  using BaseNoScope::BaseNoScope;
+  using BaseNoScope::operator=;
+};
+
+/// RAII class to temporarily disallow allocating cells in the JS heap.
+class NoAllocScope : public BaseNoScope {
+ public:
+  explicit NoAllocScope(Runtime &runtime) : NoAllocScope(runtime.getHeap()) {}
+  explicit NoAllocScope(GC &gc) : BaseNoScope(&gc.noAllocLevel_) {}
+  using BaseNoScope::BaseNoScope;
+  using BaseNoScope::operator=;
+};
+#endif
 
 //===----------------------------------------------------------------------===//
 // Runtime inline methods.

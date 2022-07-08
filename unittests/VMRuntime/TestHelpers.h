@@ -285,7 +285,7 @@ class DummyRuntime final : public HandleRootOwner,
   /// function.
   static std::unique_ptr<StorageProvider> defaultProvider();
 
-  ~DummyRuntime();
+  ~DummyRuntime() override;
 
   template <
       typename T,
@@ -361,6 +361,7 @@ class DummyRuntime final : public HandleRootOwner,
     return nullptr;
   }
 
+#ifdef HERMES_MEMORY_INSTRUMENTATION
   StackTracesTreeNode *getCurrentStackTracesTreeNode(
       const inst::Inst *ip) override {
     return nullptr;
@@ -369,6 +370,7 @@ class DummyRuntime final : public HandleRootOwner,
   StackTracesTree *getStackTracesTree() override {
     return nullptr;
   }
+#endif
 
  private:
   DummyRuntime(

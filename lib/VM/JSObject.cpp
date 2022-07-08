@@ -28,13 +28,16 @@ const ObjectVTable JSObject::vt{
         nullptr,
         nullptr,
         nullptr,
-        nullptr,
-        VTable::HeapSnapshotMetadata{
-            HeapSnapshot::NodeType::Object,
-            JSObject::_snapshotNameImpl,
-            JSObject::_snapshotAddEdgesImpl,
-            nullptr,
-            JSObject::_snapshotAddLocationsImpl}),
+        nullptr
+#ifdef HERMES_MEMORY_INSTRUMENTATION
+        ,
+        VTable::HeapSnapshotMetadata {
+          HeapSnapshot::NodeType::Object, JSObject::_snapshotNameImpl,
+              JSObject::_snapshotAddEdgesImpl, nullptr,
+              JSObject::_snapshotAddLocationsImpl
+        }
+#endif
+        ),
     JSObject::_getOwnIndexedRangeImpl,
     JSObject::_haveOwnIndexedImpl,
     JSObject::_getOwnIndexedPropertyFlagsImpl,
@@ -355,7 +358,7 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
 
   // Estimate the capacity of the output array.  This estimate is only
   // reasonable for the non-symbol case.
-  uint32_t capacity = okFlags.getIncludeNonSymbols()
+  const uint32_t capacity = okFlags.getIncludeNonSymbols()
       ? (selfHandle->clazz_.getNonNull(runtime)->getNumProperties() +
          range.second - range.first)
       : 0;
@@ -401,7 +404,6 @@ CallResult<Handle<JSArray>> JSObject::getOwnPropertyKeys(
       if ((hostObjectSymbolCount = (**hostSymbolsRes)->getEndIndex()) != 0) {
         Handle<JSArray> hostSymbols = *hostSymbolsRes;
         hostObjectSymbols = std::move(hostSymbols);
-        capacity += hostObjectSymbolCount;
       }
     }
 
@@ -2308,6 +2310,7 @@ CallResult<bool> JSObject::defineOwnComputed(
       selfHandle, runtime, *converted, dpFlags, valueOrAccessor, opFlags);
 }
 
+#ifdef HERMES_MEMORY_INSTRUMENTATION
 std::string JSObject::getHeuristicTypeName(GC &gc) {
   PointerBase &base = gc.getPointerBase();
   if (auto constructorVal = tryGetNamedNoAlloc(
@@ -2476,6 +2479,7 @@ void JSObject::_snapshotAddLocationsImpl(
     }
   }
 }
+#endif
 
 std::pair<uint32_t, uint32_t> JSObject::_getOwnIndexedRangeImpl(
     JSObject *self,

@@ -60,10 +60,9 @@ CallResult<HermesValue> localesToJS(
   Handle<JSArray> array = *arrayRes;
   MutableHandle<> name{runtime};
   uint64_t index = 0;
+  GCScopeMarkerRAII marker{runtime};
   for (auto &locale : *result) {
-    // No handles are allocated in this loop, so I don't need a flush,
-    // but I can't use NoAllocScope to verify, because string
-    // allocations cause it to assert.
+    marker.flush();
     CallResult<HermesValue> nameRes =
         StringPrimitive::createEfficient(runtime, std::move(locale));
     if (LLVM_UNLIKELY(nameRes == ExecutionStatus::EXCEPTION)) {
@@ -294,6 +293,9 @@ const OptionData kDTFOptions[] = {
      platform_intl::Option::Kind::String,
      kTimeRequired | kTimeDefault},
     {u"timeZoneName", platform_intl::Option::Kind::String, 0},
+    {u"dateStyle", platform_intl::Option::Kind::String, 0},
+    {u"timeStyle", platform_intl::Option::Kind::String, 0},
+    {u"fractionalSecondDigits", platform_intl::Option::Kind::Number, 0},
     {nullptr, platform_intl::Option::Kind::Bool, 0},
 };
 
@@ -1224,6 +1226,7 @@ void defineIntlNumberFormat(Runtime &runtime, Handle<JSObject> intl) {
       false,
       true);
 
+#ifndef __APPLE__
   defineMethod(
       runtime,
       prototype,
@@ -1231,6 +1234,7 @@ void defineIntlNumberFormat(Runtime &runtime, Handle<JSObject> intl) {
       nullptr,
       intlNumberFormatPrototypeFormatToParts,
       1);
+#endif
 
   defineMethod(
       runtime,

@@ -9,6 +9,7 @@
 #include "hermes/Platform/Intl/PlatformIntl.h"
 
 #import <Foundation/Foundation.h>
+#include <unordered_set>
 
 namespace hermes {
 namespace platform_intl {
@@ -314,9 +315,9 @@ vm::CallResult<std::vector<std::u16string>> canonicalizeLocaleList(
   // [[InitializedLocale]] internal slot, then
   // 4. Else
   // We don't yet support Locale object -
-  // https://tc39.es/ecma402/#locale-objects As of now, 'locales' can only be a
-  // string list/array. Validation occurs in normalizeLocaleList, so this
-  // function just takes a vector of strings.
+  // https://402.ecma-international.org/8.0/#locale-objects As of now, 'locales'
+  // can only be a string list/array. Validation occurs in normalizeLocaleList,
+  // so this function just takes a vector of strings.
   // 5. Let len be ? ToLength(? Get(O, "length")).
   // 6. Let k be 0.
   // 7. Repeat, while k < len
@@ -462,10 +463,172 @@ vm::CallResult<std::optional<uint8_t>> getNumberOption(
   //  3. Return ? DefaultNumberOption(value, minimum, maximum, fallback).
   auto defaultNumber =
       defaultNumberOption(runtime, property, value, minimum, maximum, fallback);
-  if (defaultNumber == vm::ExecutionStatus::EXCEPTION) {
+  if (LLVM_UNLIKELY(defaultNumber == vm::ExecutionStatus::EXCEPTION)) {
     return vm::ExecutionStatus::EXCEPTION;
   }
   return std::optional<uint8_t>(defaultNumber.getValue());
+}
+
+// Implementation of
+// https://402.ecma-international.org/8.0/#sec-todatetimeoptions
+vm::CallResult<Options> toDateTimeOptions(
+    vm::Runtime &runtime,
+    Options options,
+    std::u16string_view required,
+    std::u16string_view defaults) {
+  // 1. If options is undefined, let options be null; otherwise let options be ?
+  // ToObject(options).
+  // 2. Let options be OrdinaryObjectCreate(options).
+  // 3. Let needDefaults be true.
+  bool needDefaults = true;
+  // 4. If required is "date" or "any", then
+  if (required == u"date" || required == u"any") {
+    // a. For each property name prop of « "weekday", "year", "month", "day" »,
+    // do
+    // TODO(T116352920): Make this a std::u16string props[] once we have
+    // constexpr std::u16string.
+    static constexpr std::u16string_view props[] = {
+        u"weekday", u"year", u"month", u"day"};
+    for (const auto &prop : props) {
+      // i. Let value be ? Get(options, prop).
+      if (options.find(std::u16string(prop)) != options.end()) {
+        // ii. If value is not undefined, let needDefaults be false.
+        needDefaults = false;
+      }
+    }
+  }
+  // 5. If required is "time" or "any", then
+  if (required == u"time" || required == u"any") {
+    // a. For each property name prop of « "dayPeriod", "hour", "minute",
+    // "second", "fractionalSecondDigits" », do
+    static constexpr std::u16string_view props[] = {
+        u"dayPeriod", u"hour", u"minute", u"second", u"fractionalSecondDigits"};
+    for (const auto &prop : props) {
+      // i. Let value be ? Get(options, prop).
+      if (options.find(std::u16string(prop)) != options.end()) {
+        // ii. If value is not undefined, let needDefaults be false.
+        needDefaults = false;
+      }
+    }
+  }
+  // 6. Let dateStyle be ? Get(options, "dateStyle").
+  auto dateStyle = options.find(u"dateStyle");
+  // 7. Let timeStyle be ? Get(options, "timeStyle").
+  auto timeStyle = options.find(u"timeStyle");
+  // 8. If dateStyle is not undefined or timeStyle is not undefined, let
+  // needDefaults be false.
+  if (dateStyle != options.end() || timeStyle != options.end()) {
+    needDefaults = false;
+  }
+  // 9. If required is "date" and timeStyle is not undefined, then
+  if (required == u"date" && timeStyle != options.end()) {
+    // a. Throw a TypeError exception.
+    return runtime.raiseTypeError(
+        "Unexpectedly found timeStyle option for \"date\" property");
+  }
+  // 10. If required is "time" and dateStyle is not undefined, then
+  if (required == u"time" && dateStyle != options.end()) {
+    // a. Throw a TypeError exception.
+    return runtime.raiseTypeError(
+        "Unexpectedly found dateStyle option for \"time\" property");
+  }
+  // 11. If needDefaults is true and defaults is either "date" or "all", then
+  if (needDefaults && (defaults == u"date" || defaults == u"all")) {
+    // a. For each property name prop of « "year", "month", "day" », do
+    static constexpr std::u16string_view props[] = {u"year", u"month", u"day"};
+    for (const auto &prop : props) {
+      // i. Perform ? CreateDataPropertyOrThrow(options, prop, "numeric").
+      options.emplace(prop, Option(std::u16string(u"numeric")));
+    }
+  }
+  // 12. If needDefaults is true and defaults is either "time" or "all", then
+  if (needDefaults && (defaults == u"time" || defaults == u"all")) {
+    // a. For each property name prop of « "hour", "minute", "second" », do
+    static constexpr std::u16string_view props[] = {
+        u"hour", u"minute", u"second"};
+    for (const auto &prop : props) {
+      // i. Perform ? CreateDataPropertyOrThrow(options, prop, "numeric").
+      options.emplace(prop, Option(std::u16string(u"numeric")));
+    }
+  }
+  // 13. return options
+  return options;
+}
+
+// https://402.ecma-international.org/8.0/#sec-case-sensitivity-and-case-mapping
+std::u16string toASCIIUppercase(std::u16string_view tz) {
+  std::u16string result;
+  std::uint8_t offset = 'a' - 'A';
+  for (char16_t c16 : tz) {
+    if (c16 >= 'a' && c16 <= 'z') {
+      result.push_back((char)c16 - offset);
+    } else {
+      result.push_back(c16);
+    }
+  }
+  return result;
+}
+
+static std::unordered_map<std::u16string, std::u16string> validTimeZoneNames() {
+  std::unordered_map<std::u16string, std::u16string> result;
+  static auto nsTimeZoneNames = [NSTimeZone.knownTimeZoneNames
+      arrayByAddingObjectsFromArray:NSTimeZone.abbreviationDictionary.allKeys];
+  for (NSString *timeZoneName in nsTimeZoneNames) {
+    result.emplace(
+        nsStringToU16String(timeZoneName.uppercaseString),
+        nsStringToU16String(timeZoneName));
+  }
+  return result;
+}
+
+// https://402.ecma-international.org/8.0/#sec-canonicalizetimezonename
+std::u16string canonicalizeTimeZoneName(std::u16string_view tz) {
+  // 1. Let ianaTimeZone be the Zone or Link name of the IANA Time Zone Database
+  // such that timeZone, converted to upper case as described in 6.1, is equal
+  // to ianaTimeZone, converted to upper case as described in 6.1.
+  static const auto timeZones = validTimeZoneNames();
+  auto ianaTimeZoneIt = timeZones.find(toASCIIUppercase(tz));
+  auto ianaTimeZone = (ianaTimeZoneIt != timeZones.end())
+      ? ianaTimeZoneIt->second
+      : std::u16string(tz);
+  // NOTE: We don't use actual IANA database, so we leave (2) unimplemented.
+  // 2. If ianaTimeZone is a Link name, let ianaTimeZone be the corresponding
+  // Zone name as specified in the "backward" file of the IANA Time Zone
+  // Database.
+  // 3. If ianaTimeZone is "Etc/UTC" or "Etc/GMT", return "UTC".
+  if (ianaTimeZone == u"Etc/UTC" || ianaTimeZone == u"Etc/GMT")
+    ianaTimeZone = u"UTC";
+  // 4. Return ianaTimeZone.
+  return ianaTimeZone;
+}
+
+// https://402.ecma-international.org/8.0/#sec-defaulttimezone
+std::u16string getDefaultTimeZone(NSLocale *locale) {
+  return nsStringToU16String(NSTimeZone.defaultTimeZone.name);
+}
+
+// https://402.ecma-international.org/8.0/#sec-isvalidtimezonename
+static bool isValidTimeZoneName(std::u16string_view tz) {
+  static const auto timeZones = validTimeZoneNames();
+  return timeZones.find(toASCIIUppercase(tz)) != timeZones.end();
+}
+
+// https://www.unicode.org/reports/tr35/tr35-31/tr35-dates.html#Date_Field_Symbol_Table
+std::u16string getDefaultHourCycle(NSLocale *locale) {
+  auto dateFormatPattern =
+      nsStringToU16String([NSDateFormatter dateFormatFromTemplate:@"j"
+                                                          options:0
+                                                           locale:locale]);
+  for (char16_t c16 : dateFormatPattern) {
+    if (c16 == u'h') {
+      return u"h12";
+    } else if (c16 == u'K') {
+      return u"h11";
+    } else if (c16 == u'H') {
+      return u"h23";
+    }
+  }
+  return u"h24";
 }
 }
 
@@ -760,92 +923,1516 @@ double Collator::compare(
                locale:impl_->nsLocale];
 }
 
+// Implementation of
+// https://402.ecma-international.org/8.0/#datetimeformat-objects
 struct DateTimeFormat::Impl {
+  // https://402.ecma-international.org/8.0/#sec-properties-of-intl-datetimeformat-instances
+  // Intl.DateTimeFormat instances have an [[InitializedDateTimeFormat]]
+  // internal slot.
+  // NOTE: InitializedDateTimeFormat is not implemented.
+  // Intl.DateTimeFormat instances also have several internal
+  // slots that are computed by the constructor:
+  // [[Locale]] is a String value with the language tag of the locale whose
+  // localization is used for formatting.
   std::u16string locale;
+  // [[Calendar]] is a String value with the "type" given in Unicode Technical
+  // Standard 35 for the calendar used for formatting.
+  std::optional<std::u16string> calendar;
+  // [[NumberingSystem]] is a String value with the "type" given in Unicode
+  // Technical Standard 35 for the numbering system used for formatting.
+  // NOTE: Even though NSDateFormatter formats date and time using different
+  // numbering systems based on its "locale" value, it does not allow to set/get
+  // the numbering system value explicitly. So we consider this feature
+  // unsupported.
+  // [[TimeZone]] is a String value with the IANA time zone name of the time
+  // zone used for formatting.
+  std::u16string timeZone;
+  // [[Weekday]], [[Era]], [[Year]], [[Month]], [[Day]], [[DayPeriod]],
+  // [[Hour]], [[Minute]], [[Second]], [[TimeZoneName]] are each either
+  // undefined, indicating that the component is not used for formatting, or one
+  // of the String values given in Table 4, indicating how the component should
+  // be presented in the formatted output.
+  std::optional<std::u16string> weekday;
+  std::optional<std::u16string> era;
+  std::optional<std::u16string> year;
+  std::optional<std::u16string> month;
+  std::optional<std::u16string> day;
+  std::optional<std::u16string> dayPeriod;
+  std::optional<std::u16string> hour;
+  std::optional<std::u16string> minute;
+  std::optional<std::u16string> second;
+  std::optional<std::u16string> timeZoneName;
+  // [[FractionalSecondDigits]] is either undefined or a positive, non-zero
+  // integer Number value indicating the fraction digits to be used for
+  // fractional seconds. Numbers will be rounded or padded with trailing zeroes
+  // if necessary.
+  std::optional<uint8_t> fractionalSecondDigits;
+  // [[HourCycle]] is a String value indicating whether the 12-hour format
+  // ("h11", "h12") or the 24-hour format ("h23", "h24") should be used. "h11"
+  // and "h23" start with hour 0 and go up to 11 and 23 respectively. "h12" and
+  // "h24" start with hour 1 and go up to 12 and 24. [[HourCycle]] is only used
+  // when [[Hour]] is not undefined.
+  std::optional<std::u16string> hourCycle;
+  // [[DateStyle]], [[TimeStyle]] are each either undefined, or a String value
+  // with values "full", "long", "medium", or "short".
+  std::optional<std::u16string> dateStyle;
+  std::optional<std::u16string> timeStyle;
+  // [[Pattern]] is a String value as described in 11.3.3.
+  // [[RangePatterns]] is a Record as described in 11.3.3.
+  // Finally, Intl.DateTimeFormat instances have a [[BoundFormat]]
+  // internal slot that caches the function returned by the format accessor
+  // (11.4.3).
+  // NOTE: Pattern and RangePatterns are not implemented. BoundFormat is
+  // implemented in Intl.cpp.
+  NSDateFormatter *getNSDateFormatter() noexcept;
 };
 
 DateTimeFormat::DateTimeFormat() : impl_(std::make_unique<Impl>()) {}
 DateTimeFormat::~DateTimeFormat() {}
 
+// Implementation of
+// https://402.ecma-international.org/8.0/#sec-intl.datetimeformat.supportedlocalesof
 vm::CallResult<std::vector<std::u16string>> DateTimeFormat::supportedLocalesOf(
     vm::Runtime &runtime,
     const std::vector<std::u16string> &locales,
     const Options &options) noexcept {
-  return std::vector<std::u16string>{u"en-CA", u"de-DE"};
+  // 1. Let availableLocales be %DateTimeFormat%.[[AvailableLocales]].
+  // 2. Let requestedLocales be ? CanonicalizeLocaleList(locales).
+  auto requestedLocales = getCanonicalLocales(runtime, locales);
+  const std::vector<std::u16string> &availableLocales = getAvailableLocales();
+  // 3. Return ? (availableLocales, requestedLocales, options).
+  return supportedLocales(availableLocales, requestedLocales.getValue());
 }
 
+// Implementation of
+// https://402.ecma-international.org/8.0/#sec-initializedatetimeformat
 vm::ExecutionStatus DateTimeFormat::initialize(
     vm::Runtime &runtime,
     const std::vector<std::u16string> &locales,
-    const Options &options) noexcept {
-  impl_->locale = u"en-US";
+    const Options &inputOptions) noexcept {
+  // 1. Let requestedLocales be ? CanonicalizeLocaleList(locales).
+  auto requestedLocalesRes = canonicalizeLocaleList(runtime, locales);
+  if (LLVM_UNLIKELY(requestedLocalesRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 2. Let options be ? ToDateTimeOptions(options, "any", "date").
+  auto optionsRes = toDateTimeOptions(runtime, inputOptions, u"any", u"date");
+  if (LLVM_UNLIKELY(optionsRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto options = *optionsRes;
+  // 3. Let opt be a new Record.
+  std::unordered_map<std::u16string, std::u16string> opt;
+  // 4. Let matcher be ? GetOption(options, "localeMatcher", "string",
+  // «"lookup", "best fit" », "best fit").
+  auto matcherRes = getOptionString(
+      runtime,
+      options,
+      u"localeMatcher",
+      {u"lookup", u"best fit"},
+      u"best fit");
+  if (LLVM_UNLIKELY(matcherRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 5. Set opt.[[localeMatcher]] to matcher.
+  auto matcherOpt = *matcherRes;
+  opt.emplace(u"localeMatcher", *matcherOpt);
+  // 6. Let calendar be ? GetOption(options, "calendar", "string",
+  // undefined, undefined).
+  auto calendarRes = getOptionString(runtime, options, u"calendar", {}, {});
+  // 7. If calendar is not undefined, then
+  if (LLVM_UNLIKELY(calendarRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 8. Set opt.[[ca]] to calendar.
+  if (auto calendarOpt = *calendarRes) {
+    // a. If calendar does not match the Unicode Locale Identifier type
+    // nonterminal, throw a RangeError exception.
+    if (!isUnicodeExtensionType(*calendarOpt))
+      return runtime.raiseRangeError(
+          vm::TwineChar16("Invalid calendar: ") +
+          vm::TwineChar16(calendarOpt->c_str()));
+    opt.emplace(u"ca", *calendarOpt);
+  }
+  // 9. Let numberingSystem be ? GetOption(options, "numberingSystem",
+  // "string", undefined, undefined).
+  // 10. If numberingSystem is not undefined, then
+  // a. If numberingSystem does not match the Unicode Locale Identifier
+  // type nonterminal, throw a RangeError exception.
+  // 11. Set opt.[[nu]] to numberingSystem.
+  opt.emplace(u"nu", u"");
+  // 12. Let hour12 be ? GetOption(options, "hour12", "boolean",
+  // undefined, undefined).
+  auto hour12 = getOptionBool(runtime, options, u"hour12", {});
+  // 13. Let hourCycle be ? GetOption(options, "hourCycle", "string", «
+  // "h11", "h12", "h23", "h24" », undefined).
+  static constexpr std::u16string_view hourCycles[] = {
+      u"h11", u"h12", u"h23", u"h24"};
+  auto hourCycleRes =
+      getOptionString(runtime, options, u"hourCycle", hourCycles, {});
+  if (LLVM_UNLIKELY(hourCycleRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto hourCycleOpt = *hourCycleRes;
+  // 14. If hour12 is not undefined, then
+  if (hour12.has_value())
+    // a. Let hourCycle be null.
+    // NOTE: We would normally just don't add this to the "opt" map, but
+    // resolveLocale actually checks for presence of keys, even if values are
+    // null or undefined.
+    hourCycleOpt = u"";
+  if (hourCycleOpt.has_value())
+    // 15. Set opt.[[hc]] to hourCycle.
+    opt.emplace(u"hc", *hourCycleOpt);
+  // 16. Let localeData be %DateTimeFormat%.[[LocaleData]].
+  // NOTE: We don't actually have access to the underlying locale data, so we
+  // will use NSLocale.currentLocale instance as a substitute
+  auto localeData = NSLocale.currentLocale;
+  // 17. Let r be ResolveLocale(%DateTimeFormat%.[[AvailableLocales]],
+  // requestedLocales, opt, %DateTimeFormat%.[[RelevantExtensionKeys]],
+  // localeData).
+  static constexpr std::u16string_view relevantExtensionKeys[] = {
+      u"ca", u"nu", u"hc"};
+  auto r = resolveLocale(
+      getAvailableLocales(), *requestedLocalesRes, opt, relevantExtensionKeys);
+  // 18. Set dateTimeFormat.[[Locale]] to r.[[locale]].
+  impl_->locale = std::move(r.locale);
+  // 19. Let calendar be r.[[ca]].
+  auto caIt = r.extensions.find(u"ca");
+  // 20. Set dateTimeFormat.[[Calendar]] to calendar.
+  if (caIt != r.extensions.end())
+    impl_->calendar = std::move(caIt->second);
+  // 21. Set dateTimeFormat.[[HourCycle]] to r.[[hc]].
+  auto hcIt = r.extensions.find(u"hc");
+  if (hcIt != r.extensions.end())
+    impl_->hourCycle = std::move(hcIt->second);
+  // 22. Set dateTimeFormat.[[NumberingSystem]] to r.[[nu]].
+  // 23. Let dataLocale be r.[[dataLocale]].
+  auto dataLocale = r.dataLocale;
+  // 24. Let timeZone be ? Get(options, "timeZone").
+  auto timeZoneIt = options.find(u"timeZone");
+  std::u16string timeZone;
+  //  25. If timeZone is undefined, then
+  if (timeZoneIt == options.end()) {
+    // a. Let timeZone be DefaultTimeZone().
+    timeZone = getDefaultTimeZone(localeData);
+    // 26. Else,
+  } else {
+    // a. Let timeZone be ? ToString(timeZone).
+    timeZone = timeZoneIt->second.getString();
+    // b. If the result of IsValidTimeZoneName(timeZone) is false, then
+    if (!isValidTimeZoneName(timeZone)) {
+      // i. Throw a RangeError exception.
+      return runtime.raiseRangeError("Incorrect timeZone information provided");
+    }
+    // c. Let timeZone be CanonicalizeTimeZoneName(timeZone).
+    timeZone = canonicalizeTimeZoneName(timeZone);
+  }
+  // 27. Set dateTimeFormat.[[TimeZone]] to timeZone.
+  impl_->timeZone = timeZone;
+  // 28. Let opt be a new Record.
+  // 29. For each row of Table 4, except the header row, in table order, do
+  // a. Let prop be the name given in the Property column of the row.
+  // b. If prop is "fractionalSecondDigits", then
+  // i. Let value be ? GetNumberOption(options, "fractionalSecondDigits", 1,
+  // 3, undefined).
+  // d. Set opt.[[<prop>]] to value.
+  // c. Else,
+  // i. Let value be ? GetOption(options, prop, "string", « the strings
+  // given in the Values column of the row », undefined).
+  // d. Set opt.[[<prop>]] to value.
+  // 30. Let dataLocaleData be localeData.[[<dataLocale>]].
+  // 31. Let matcher be ? GetOption(options, "formatMatcher", "string", «
+  // "basic", "best fit" », "best fit").
+  // 32. Let dateStyle be ? GetOption(options, "dateStyle", "string", « "full",
+  // "long", "medium", "short" », undefined).
+  static constexpr std::u16string_view dateStyles[] = {
+      u"full", u"long", u"medium", u"short"};
+  auto dateStyleRes =
+      getOptionString(runtime, options, u"dateStyle", dateStyles, {});
+  if (LLVM_UNLIKELY(dateStyleRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 33. Set dateTimeFormat.[[DateStyle]] to dateStyle.
+  impl_->dateStyle = *dateStyleRes;
+  // 34. Let timeStyle be ? GetOption(options, "timeStyle", "string", « "full",
+  // "long", "medium", "short" », undefined).
+  static constexpr std::u16string_view timeStyles[] = {
+      u"full", u"long", u"medium", u"short"};
+  auto timeStyleRes =
+      getOptionString(runtime, options, u"timeStyle", timeStyles, {});
+  if (LLVM_UNLIKELY(timeStyleRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 35. Set dateTimeFormat.[[TimeStyle]] to timeStyle.
+  impl_->timeStyle = *timeStyleRes;
+
+  // Initialize properties using values from the input options.
+  static constexpr std::u16string_view weekdayValues[] = {
+      u"narrow", u"short", u"long"};
+  auto weekdayRes =
+      getOptionString(runtime, inputOptions, u"weekday", weekdayValues, {});
+  if (LLVM_UNLIKELY(weekdayRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->weekday = *weekdayRes;
+
+  static constexpr std::u16string_view eraValues[] = {
+      u"narrow", u"short", u"long"};
+  auto eraRes = getOptionString(runtime, inputOptions, u"era", eraValues, {});
+  if (LLVM_UNLIKELY(eraRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->era = *eraRes;
+
+  static constexpr std::u16string_view yearValues[] = {u"2-digit", u"numeric"};
+  auto yearRes =
+      getOptionString(runtime, inputOptions, u"year", yearValues, {});
+  if (LLVM_UNLIKELY(yearRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->year = *yearRes;
+
+  static constexpr std::u16string_view monthValues[] = {
+      u"2-digit", u"numeric", u"narrow", u"short", u"long"};
+  auto monthRes =
+      getOptionString(runtime, inputOptions, u"month", monthValues, {});
+  if (LLVM_UNLIKELY(monthRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->month = *monthRes;
+
+  static constexpr std::u16string_view dayValues[] = {u"2-digit", u"numeric"};
+  auto dayRes = getOptionString(runtime, inputOptions, u"day", dayValues, {});
+  if (LLVM_UNLIKELY(dayRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->day = *dayRes;
+
+  static constexpr std::u16string_view dayPeriodValues[] = {
+      u"narrow", u"short", u"long"};
+  auto dayPeriodRes =
+      getOptionString(runtime, inputOptions, u"dayPeriod", dayPeriodValues, {});
+  if (LLVM_UNLIKELY(dayPeriodRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->dayPeriod = *dayPeriodRes;
+
+  static constexpr std::u16string_view hourValues[] = {u"2-digit", u"numeric"};
+  auto hourRes =
+      getOptionString(runtime, inputOptions, u"hour", hourValues, {});
+  if (LLVM_UNLIKELY(hourRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->hour = *hourRes;
+
+  static constexpr std::u16string_view minuteValues[] = {
+      u"2-digit", u"numeric"};
+  auto minuteRes =
+      getOptionString(runtime, inputOptions, u"minute", minuteValues, {});
+  if (LLVM_UNLIKELY(minuteRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->minute = *minuteRes;
+
+  static constexpr std::u16string_view secondValues[] = {
+      u"2-digit", u"numeric"};
+  auto secondRes =
+      getOptionString(runtime, inputOptions, u"second", secondValues, {});
+  if (LLVM_UNLIKELY(secondRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->second = *secondRes;
+
+  auto fractionalSecondDigitsRes = getNumberOption(
+      runtime, inputOptions, u"fractionalSecondDigits", 1, 3, {});
+  if (LLVM_UNLIKELY(
+          fractionalSecondDigitsRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->fractionalSecondDigits = *fractionalSecondDigitsRes;
+
+  // NOTE: "shortOffset", "longOffset", "shortGeneric", "longGeneric"
+  // are specified here:
+  // https://tc39.es/proposal-intl-extend-timezonename
+  // they are not in ecma402 spec, but there is a test for them:
+  // "test262/test/intl402/DateTimeFormat/constructor-options-timeZoneName-valid.js"
+  static constexpr std::u16string_view timeZoneNameValues[] = {
+      u"short",
+      u"long",
+      u"shortOffset",
+      u"longOffset",
+      u"shortGeneric",
+      u"longGeneric"};
+  auto timeZoneNameRes = getOptionString(
+      runtime, inputOptions, u"timeZoneName", timeZoneNameValues, {});
+  if (LLVM_UNLIKELY(timeZoneNameRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  impl_->timeZoneName = *timeZoneNameRes;
+  // NOTE: We don't have access to localeData, instead we'll defer to NSLocale
+  // wherever it is needed.
+  // 36. If dateStyle is not undefined or timeStyle is not undefined, then
+  // a. For each row in Table 4, except the header row, do
+  // i. Let prop be the name given in the Property column of the row.
+  // ii. Let p be opt.[[<prop>]].
+  // iii. If p is not undefined, then
+  // 1. Throw a TypeError exception.
+  // b. Let styles be dataLocaleData.[[styles]].[[<calendar>]].
+  // c. Let bestFormat be DateTimeStyleFormat(dateStyle, timeStyle, styles).
+  // 37. Else,
+  // a. Let formats be dataLocaleData.[[formats]].[[<calendar>]].
+  // b. If matcher is "basic", then
+  // i. Let bestFormat be BasicFormatMatcher(opt, formats).
+  // c. Else,
+  // i. Let bestFormat be BestFitFormatMatcher(opt, formats).
+  // 38. For each row in Table 4, except the header row, in table order, do
+  // for (auto const &row : table4) {
+  // a. Let prop be the name given in the Property column of the row.
+  // auto prop = row.first;
+  // b. If bestFormat has a field [[<prop>]], then
+  // i. Let p be bestFormat.[[<prop>]].
+  // ii. Set dateTimeFormat's internal slot whose name is the Internal
+  // Slot column of the row to p.
+  // 39. If dateTimeFormat.[[Hour]] is undefined, then
+  if (!impl_->hour.has_value()) {
+    // a. Set dateTimeFormat.[[HourCycle]] to undefined.
+    impl_->hourCycle = std::nullopt;
+    // b. Let pattern be bestFormat.[[pattern]].
+    // c. Let rangePatterns be bestFormat.[[rangePatterns]].
+    // 40. Else,
+  } else {
+    // a. Let hcDefault be dataLocaleData.[[hourCycle]].
+    auto hcDefault = getDefaultHourCycle(localeData);
+    // b. Let hc be dateTimeFormat.[[HourCycle]].
+    auto hc = impl_->hourCycle;
+    // c. If hc is null, then
+    if (!hc.has_value())
+      // i. Set hc to hcDefault.
+      hc = hcDefault;
+    // d. If hour12 is not undefined, then
+    if (hour12.has_value()) {
+      // i. If hour12 is true, then
+      if (*hour12 == true) {
+        // 1. If hcDefault is "h11" or "h23", then
+        if (hcDefault == u"h11" || hcDefault == u"h23") {
+          // a. Set hc to "h11".
+          hc = u"h11";
+          // 2. Else,
+        } else {
+          // a. Set hc to "h12".
+          hc = u"h12";
+        }
+        // ii. Else,
+      } else {
+        // 1. Assert: hour12 is false.
+        // 2. If hcDefault is "h11" or "h23", then
+        if (hcDefault == u"h11" || hcDefault == u"h23") {
+          // a. Set hc to "h23".
+          hc = u"h23";
+          // 3. Else,
+        } else {
+          // a. Set hc to "h24".
+          hc = u"h24";
+        }
+      }
+    }
+    // e. Set dateTimeFormat.[[HourCycle]] to hc.
+    impl_->hourCycle = hc;
+    // f. If dateTimeformat.[[HourCycle]] is "h11" or "h12", then
+    // i. Let pattern be bestFormat.[[pattern12]].
+    // ii. Let rangePatterns be bestFormat.[[rangePatterns12]].
+    // g. Else,
+    // i. Let pattern be bestFormat.[[pattern]].
+    // ii. Let rangePatterns be bestFormat.[[rangePatterns]].
+  }
+  // 41. Set dateTimeFormat.[[Pattern]] to pattern.
+  // 42. Set dateTimeFormat.[[RangePatterns]] to rangePatterns.
+  // 43. Return dateTimeFormat.
   return vm::ExecutionStatus::RETURNED;
 }
-
+// Implementer note: This method corresponds roughly to
+// https://402.ecma-international.org/8.0/#sec-intl.datetimeformat.prototype.resolvedoptions
 Options DateTimeFormat::resolvedOptions() noexcept {
   Options options;
   options.emplace(u"locale", Option(impl_->locale));
   options.emplace(u"numeric", Option(false));
+  options.emplace(u"timeZone", Option(impl_->timeZone));
+  if (impl_->calendar)
+    options.emplace(u"calendar", Option(*impl_->calendar));
+
+  if (impl_->hourCycle.has_value()) {
+    options.emplace(u"hourCycle", *impl_->hourCycle);
+    if (impl_->hourCycle == u"h11" || impl_->hourCycle == u"h12") {
+      options.emplace(u"hour12", true);
+    } else {
+      options.emplace(u"hour12", false);
+    }
+  }
+  if (impl_->weekday.has_value())
+    options.emplace(u"weekday", *impl_->weekday);
+  if (impl_->era.has_value())
+    options.emplace(u"era", *impl_->era);
+  if (impl_->year.has_value())
+    options.emplace(u"year", *impl_->year);
+  if (impl_->month.has_value())
+    options.emplace(u"month", *impl_->month);
+  if (impl_->day.has_value())
+    options.emplace(u"day", *impl_->day);
+  if (impl_->hour.has_value())
+    options.emplace(u"hour", *impl_->hour);
+  if (impl_->minute.has_value())
+    options.emplace(u"minute", *impl_->minute);
+  if (impl_->second.has_value())
+    options.emplace(u"second", *impl_->second);
+  if (impl_->timeZoneName.has_value())
+    options.emplace(u"timeZoneName", *impl_->timeZoneName);
+  if (impl_->dateStyle.has_value())
+    options.emplace(u"dateStyle", *impl_->dateStyle);
+  if (impl_->timeStyle.has_value())
+    options.emplace(u"timeStyle", *impl_->timeStyle);
   return options;
 }
 
-std::u16string DateTimeFormat::format(double jsTimeValue) noexcept {
-  auto s = std::to_string(jsTimeValue);
-  return std::u16string(s.begin(), s.end());
+enum enum_string {
+  eLong,
+  eShort,
+  eNarrow,
+  eMedium,
+  eFull,
+  eBasic,
+  eBestFit,
+  eNumeric,
+  eTwoDigit,
+  eShortOffset,
+  eLongOffset,
+  eShortGeneric,
+  eLongGeneric,
+  eNull
+};
+static enum_string formatDate(std::u16string const &inString) {
+  if (inString == u"long")
+    return eLong;
+  if (inString == u"short")
+    return eShort;
+  if (inString == u"narrow")
+    return eNarrow;
+  if (inString == u"medium")
+    return eMedium;
+  if (inString == u"full")
+    return eFull;
+  if (inString == u"basic")
+    return eBasic;
+  if (inString == u"best fit")
+    return eBestFit;
+  if (inString == u"numeric")
+    return eNumeric;
+  if (inString == u"2-digit")
+    return eTwoDigit;
+  if (inString == u"shortOffset")
+    return eShortOffset;
+  if (inString == u"longOffset")
+    return eLongOffset;
+  if (inString == u"shortGeneric")
+    return eShortGeneric;
+  if (inString == u"longGeneric")
+    return eLongGeneric;
+  return eNull;
+};
+
+NSDateFormatter *DateTimeFormat::Impl::getNSDateFormatter() noexcept {
+  NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
+  if (timeStyle.has_value()) {
+    switch (formatDate(*timeStyle)) {
+      case eFull:
+        dateFormatter.timeStyle = NSDateFormatterFullStyle;
+        break;
+      case eLong:
+        dateFormatter.timeStyle = NSDateFormatterLongStyle;
+        break;
+      case eMedium:
+        dateFormatter.timeStyle = NSDateFormatterMediumStyle;
+        break;
+      case eShort:
+        dateFormatter.timeStyle = NSDateFormatterShortStyle;
+        break;
+      default:
+        dateFormatter.timeStyle = NSDateFormatterShortStyle;
+    }
+  }
+  if (dateStyle.has_value()) {
+    switch (formatDate(*dateStyle)) {
+      case eFull:
+        dateFormatter.dateStyle = NSDateFormatterFullStyle;
+        break;
+      case eLong:
+        dateFormatter.dateStyle = NSDateFormatterLongStyle;
+        break;
+      case eMedium:
+        dateFormatter.dateStyle = NSDateFormatterMediumStyle;
+        break;
+      case eShort:
+        dateFormatter.dateStyle = NSDateFormatterShortStyle;
+        break;
+      default:
+        dateFormatter.dateStyle = NSDateFormatterShortStyle;
+    }
+  }
+  dateFormatter.timeZone =
+      [[NSTimeZone alloc] initWithName:u16StringToNSString(timeZone)];
+  dateFormatter.locale =
+      [[NSLocale alloc] initWithLocaleIdentifier:u16StringToNSString(locale)];
+  if (calendar)
+    dateFormatter.calendar = [[NSCalendar alloc]
+        initWithCalendarIdentifier:u16StringToNSString(*calendar)];
+  if (timeStyle.has_value() || dateStyle.has_value())
+    return dateFormatter;
+  // The following options cannot be used in conjunction with timeStyle or
+  // dateStyle
+  // Form a custom format string It will be reordered according to
+  // locale later
+  NSMutableString *customFormattedDate = [[NSMutableString alloc] init];
+  if (timeZoneName.has_value()) {
+    switch (formatDate(*timeZoneName)) {
+      case eShort:
+        [customFormattedDate appendString:@"z"];
+        break;
+      case eLong:
+        [customFormattedDate appendString:@"zzzz"];
+        break;
+      case eShortOffset:
+        [customFormattedDate appendString:@"O"];
+        break;
+      case eLongOffset:
+        [customFormattedDate appendString:@"OOOO"];
+        break;
+      case eShortGeneric:
+        [customFormattedDate appendString:@"v"];
+        break;
+      case eLongGeneric:
+        [customFormattedDate appendString:@"vvvv"];
+        break;
+      default:
+        [customFormattedDate appendString:@"z"];
+    }
+  }
+  if (era.has_value()) {
+    switch (formatDate(*era)) {
+      case eNarrow:
+        [customFormattedDate appendString:@"GGGGG"];
+        break;
+      case eShort:
+        [customFormattedDate appendString:@"G"];
+        break;
+      case eLong:
+        [customFormattedDate appendString:@"GGGG"];
+        break;
+      default:
+        [customFormattedDate appendString:@"G"];
+    }
+  }
+  if (year.has_value()) {
+    switch (formatDate(*year)) {
+      case eNumeric:
+        [customFormattedDate appendString:@"yyyy"];
+        break;
+      case eTwoDigit:
+        [customFormattedDate appendString:@"yy"];
+        break;
+      default:
+        [customFormattedDate appendString:@"yyyy"];
+    }
+  }
+  if (month.has_value()) {
+    switch (formatDate(*month)) {
+      case eNarrow:
+        [customFormattedDate appendString:@"MMMMM"];
+        break;
+      case eNumeric:
+        [customFormattedDate appendString:@"M"];
+        break;
+      case eTwoDigit:
+        [customFormattedDate appendString:@"MM"];
+        break;
+      case eShort:
+        [customFormattedDate appendString:@"MMM"];
+        break;
+      case eLong:
+        [customFormattedDate appendString:@"MMMM"];
+        break;
+      default:
+        [customFormattedDate appendString:@"MMM"];
+    }
+  }
+  if (weekday.has_value()) {
+    switch (formatDate(*weekday)) {
+      case eNarrow:
+        [customFormattedDate appendString:@"EEEEE"];
+        break;
+      case eShort:
+        [customFormattedDate appendString:@"E"];
+        break;
+      case eLong:
+        [customFormattedDate appendString:@"EEEE"];
+        break;
+      default:
+        [customFormattedDate appendString:@"E"];
+    }
+  }
+  if (day.has_value()) {
+    switch (formatDate(*day)) {
+      case eNumeric:
+        [customFormattedDate appendString:@"d"];
+        break;
+      case eTwoDigit:
+        [customFormattedDate appendString:@"dd"];
+        break;
+      default:
+        [customFormattedDate appendString:@"dd"];
+    }
+  }
+  if (hour.has_value()) {
+    // Ignore the hour12 bool in the impl_ struct
+    // a = AM/PM for 12 hr clocks, automatically added depending on locale
+    // AM/PM not multilingual, de-DE should be "03 Uhr" not "3 AM"
+    // K = h11 = 0-11
+    // h = h12 = 1-12
+    // H = h23 = 0-23
+    // k = h24 = 1-24
+    if (hourCycle == u"h12") {
+      switch (formatDate(*hour)) {
+        case eNumeric:
+          [customFormattedDate appendString:@"h"];
+          break;
+        case eTwoDigit:
+          [customFormattedDate appendString:@"hh"];
+          break;
+        default:
+          [customFormattedDate appendString:@"hh"];
+      }
+    } else if (hourCycle == u"h24") {
+      switch (formatDate(*hour)) {
+        case eNumeric:
+          [customFormattedDate appendString:@"k"];
+          break;
+        case eTwoDigit:
+          [customFormattedDate appendString:@"kk"];
+          break;
+        default:
+          [customFormattedDate appendString:@"kk"];
+      }
+    } else if (hourCycle == u"h11") {
+      switch (formatDate(*hour)) {
+        case eNumeric:
+          [customFormattedDate appendString:@"K"];
+          break;
+        case eTwoDigit:
+          [customFormattedDate appendString:@"KK"];
+          break;
+        default:
+          [customFormattedDate appendString:@"KK"];
+      }
+    } else { // h23
+      switch (formatDate(*hour)) {
+        case eNumeric:
+          [customFormattedDate appendString:@"H"];
+          break;
+        case eTwoDigit:
+          [customFormattedDate appendString:@"HH"];
+          break;
+        default:
+          [customFormattedDate appendString:@"HH"];
+      }
+    }
+  }
+  if (minute.has_value()) {
+    switch (formatDate(*minute)) {
+      case eNumeric:
+        [customFormattedDate appendString:@"m"];
+        break;
+      case eTwoDigit:
+        [customFormattedDate appendString:@"mm"];
+        break;
+      default:
+        [customFormattedDate appendString:@"m"];
+    }
+  }
+  if (second.has_value()) {
+    switch (formatDate(*second)) {
+      case eNumeric:
+        [customFormattedDate appendString:@"s"];
+        break;
+      case eTwoDigit:
+        [customFormattedDate appendString:@"ss"];
+        break;
+      default:
+        [customFormattedDate appendString:@"s"];
+    }
+  }
+  if (fractionalSecondDigits.has_value()) {
+    // This currently outputs to 3 digits only with the date?
+    switch (*fractionalSecondDigits) {
+      case 1:
+        [customFormattedDate appendString:@"S"];
+      case 2:
+        [customFormattedDate appendString:@"SS"];
+      case 3:
+        [customFormattedDate appendString:@"SSS"];
+    }
+  }
+  // Not supported - dayPeriod (at night/in the morning)
+  // Set the custom date from all the concatonated NSStrings (locale will
+  // automatically separate the order) Only set a template format if it isn't
+  // empty
+  if (customFormattedDate.length > 0) {
+    [dateFormatter setLocalizedDateFormatFromTemplate:customFormattedDate];
+  } else {
+    dateFormatter.dateStyle = NSDateFormatterShortStyle;
+  }
+
+  return dateFormatter;
 }
 
-std::vector<std::unordered_map<std::u16string, std::u16string>>
-DateTimeFormat::formatToParts(double jsTimeValue) noexcept {
-  std::unordered_map<std::u16string, std::u16string> part;
-  part[u"type"] = u"integer";
-  // This isn't right, but I didn't want to do more work for a stub.
-  std::string s = std::to_string(jsTimeValue);
-  part[u"value"] = {s.begin(), s.end()};
-  return std::vector<std::unordered_map<std::u16string, std::u16string>>{part};
+std::u16string DateTimeFormat::format(double jsTimeValue) noexcept {
+  auto timeInSeconds = jsTimeValue / 1000;
+  NSDate *date = [NSDate dateWithTimeIntervalSince1970:timeInSeconds];
+  NSDateFormatter *dateFormatter = impl_->getNSDateFormatter();
+  return nsStringToU16String([dateFormatter stringFromDate:date]);
+}
+
+static std::u16string returnTypeOfDate(const char16_t &c16) {
+  if (c16 == u'a')
+    return u"dayPeriod";
+  if (c16 == u'z' || c16 == u'v' || c16 == u'O')
+    return u"timeZoneName";
+  if (c16 == u'G')
+    return u"era";
+  if (c16 == u'y')
+    return u"year";
+  if (c16 == u'M')
+    return u"month";
+  if (c16 == u'E')
+    return u"weekday";
+  if (c16 == u'd')
+    return u"day";
+  if (c16 == u'h' || c16 == u'k' || c16 == u'K' || c16 == u'H')
+    return u"hour";
+  if (c16 == u'm')
+    return u"minute";
+  if (c16 == u's')
+    return u"second";
+  if (c16 == u'S')
+    return u"fractionalSecond";
+  return u"literal";
+}
+
+// Implementer note: This method corresponds roughly to
+// https://402.ecma-international.org/8.0/#sec-formatdatetimetoparts
+std::vector<Part> DateTimeFormat::formatToParts(double x) noexcept {
+  // NOTE: We dont have access to localeData.patterns. Instead we use
+  // NSDateFormatter's foramt string, and break it into components.
+  // 1. Let parts be ? PartitionDateTimePattern(dateTimeFormat, x).
+  auto fmt = nsStringToU16String(impl_->getNSDateFormatter().dateFormat);
+  std::unique(fmt.begin(), fmt.end());
+  auto formattedDate = format(x);
+  // 2. Let result be ArrayCreate(0).
+  std::vector<Part> result;
+  // 3. Let n be 0.
+  // 4. For each Record { [[Type]], [[Value]] } part in parts, do
+  // a. Let O be OrdinaryObjectCreate(%Object.prototype%).
+  // b. Perform ! CreateDataPropertyOrThrow(O, "type", part.[[Type]]).
+  // c. Perform ! CreateDataPropertyOrThrow(O, "value", part.[[Value]]).
+  // d. Perform ! CreateDataProperty(result, ! ToString(n), O).
+  // e. Increment n by 1.
+  std::u16string currentPart;
+  unsigned n = 0;
+  static auto alphanumerics = NSCharacterSet.alphanumericCharacterSet;
+  for (char16_t c16 : formattedDate) {
+    if ([alphanumerics characterIsMember:c16]) {
+      currentPart += c16;
+      continue;
+    }
+    if (currentPart != u"") {
+      result.push_back(
+          {{u"type", returnTypeOfDate(fmt[n])}, {u"value", currentPart}});
+      currentPart = u"";
+      n++;
+    }
+    result.push_back({{u"type", u"literal"}, {u"value", {c16}}});
+    n++;
+  }
+  // Last format string component.
+  result.push_back(
+      {{u"type", returnTypeOfDate(fmt[n])}, {u"value", currentPart}});
+  // 5. Return result.
+  return result;
 }
 
 struct NumberFormat::Impl {
+  // https://402.ecma-international.org/8.0/#sec-properties-of-intl-numberformat-instances
+  // Intl.NumberFormat instances have an [[InitializedNumberFormat]] internal
+  // slot.
+  // NOTE: InitializedNumberFormat is not implemented.
+  // [[Locale]] is a String value with the language tag of the locale whose
+  // localization is used for formatting.
   std::u16string locale;
+  // [[DataLocale]] is a String value with the language tag of the nearest
+  // locale for which the implementation has data to perform the formatting
+  // operation. It will be a parent locale of [[Locale]].
+  std::u16string dataLocale;
+  // [[NumberingSystem]] is a String value with the "type" given in Unicode
+  // Technical Standard 35 for the numbering system used for formatting.
+  // NOTE: Even though NSNumberFormatter formats numbers and time using
+  // different numbering systems based on its "locale" value, it does not allow
+  // to set/get the numbering system value explicitly. So we consider this
+  // feature unsupported.
+  // [[Style]] is one of the String values "decimal", "currency", "percent", or
+  // "unit", identifying the type of quantity being measured.
+  std::u16string style;
+  // [[Currency]] is a String value with the currency code identifying the
+  // currency to be used if formatting with the "currency" unit type. It is only
+  // used when [[Style]] has the value "currency".
+  std::u16string currency;
+  // [[CurrencyDisplay]] is one of the String values "code", "symbol",
+  // "narrowSymbol", or "name", specifying whether to display the currency as an
+  // ISO 4217 alphabetic currency code, a localized currency symbol, or a
+  // localized currency name if formatting with the "currency" style. It is only
+  // used when [[Style]] has the value "currency".
+  std::u16string currencyDisplay;
+  // [[CurrencySign]] is one of the String values "standard" or "accounting",
+  // specifying whether to render negative numbers in accounting format, often
+  // signified by parenthesis. It is only used when [[Style]] has the value
+  // "currency" and when [[SignDisplay]] is not "never".
+  std::u16string currencySign;
+  // [[Unit]] is a core unit identifier, as defined by Unicode Technical
+  // Standard #35, Part 2, Section 6. It is only used when [[Style]] has the
+  // value "unit".
+  std::u16string unit;
+  // [[UnitDisplay]] is one of the String values "short", "narrow", or "long",
+  // specifying whether to display the unit as a symbol, narrow symbol, or
+  // localized long name if formatting with the "unit" style. It is only used
+  // when [[Style]] has the value "unit".
+  std::u16string unitDisplay;
+  // [[MinimumIntegerDigits]] is a non-negative integer Number value indicating
+  // the minimum integer digits to be used. Numbers will be padded with leading
+  // zeroes if necessary.
+  uint8_t minimumIntegerDigits;
+  // [[MinimumFractionDigits]] and [[MaximumFractionDigits]] are non-negative
+  // integer Number values indicating the minimum and maximum fraction digits to
+  // be used. Numbers will be rounded or padded with trailing zeroes if
+  // necessary. These properties are only used when [[RoundingType]] is
+  // fractionDigits.
+  uint8_t minimumFractionDigits;
+  uint8_t maximumFractionDigits;
+  // [[MinimumSignificantDigits]] and [[MaximumSignificantDigits]] are positive
+  // integer Number values indicating the minimum and maximum fraction digits to
+  // be shown. If present, the formatter uses however many fraction digits are
+  // required to display the specified number of significant digits. These
+  // properties are only used when [[RoundingType]] is significantDigits.
+  uint8_t minimumSignificantDigits;
+  uint8_t maximumSignificantDigits;
+  // [[UseGrouping]] is a Boolean value indicating whether a grouping separator
+  // should be used.
+  bool useGrouping;
+  // [[RoundingType]] is one of the values fractionDigits, significantDigits, or
+  // compactRounding, indicating which rounding strategy to use. If
+  // fractionDigits, the number is rounded according to
+  // [[MinimumFractionDigits]] and [[MaximumFractionDigits]], as described
+  // above. If significantDigits, the number is rounded according to
+  // [[MinimumSignificantDigits]] and [[MaximumSignificantDigits]] as described
+  // above. If compactRounding, the number is rounded to 1 maximum fraction
+  // digit if there is 1 digit before the decimal separator, and otherwise round
+  // to 0 fraction digits.
+  std::u16string roundingType;
+  // [[Notation]] is one of the String values "standard", "scientific",
+  // "engineering", or "compact", specifying whether the number should be
+  // displayed without scaling, scaled to the units place with the power of ten
+  // in scientific notation, scaled to the nearest thousand with the power of
+  // ten in scientific notation, or scaled to the nearest locale-dependent
+  // compact decimal notation power of ten with the corresponding compact
+  // decimal notation affix.
+  std::u16string notation;
+  // [[CompactDisplay]] is one of the String values "short" or "long",
+  // specifying whether to display compact notation affixes in short form ("5K")
+  // or long form ("5 thousand") if formatting with the "compact" notation. It
+  // is only used when [[Notation]] has the value "compact".
+  std::u16string compactDisplay;
+  // [[SignDisplay]] is one of the String values "auto", "always", "never", or
+  // "exceptZero", specifying whether to show the sign on negative numbers only,
+  // positive and negative numbers including zero, neither positive nor negative
+  // numbers, or positive and negative numbers but not zero. In scientific
+  // notation, this slot affects the sign display of the mantissa but not the
+  // exponent.
+  std::u16string signDisplay;
+  // Finally, Intl.NumberFormat instances have a [[BoundFormat]] internal slot
+  // that caches the function returned by the format accessor (15.4.3).
+  // NOTE: BoundFormat is not implemented.
+  vm::ExecutionStatus setNumberFormatUnitOptions(
+      vm::Runtime &runtime,
+      const Options &options) noexcept;
+  vm::ExecutionStatus setNumberFormatDigitOptions(
+      vm::Runtime &runtime,
+      const Options &options,
+      uint8_t mnfdDefault,
+      uint8_t mxfdDefault,
+      std::u16string_view notation) noexcept;
+  std::u16string format(double number) noexcept;
 };
 
 NumberFormat::NumberFormat() : impl_(std::make_unique<Impl>()) {}
 NumberFormat::~NumberFormat() {}
 
+// https://402.ecma-international.org/8.0/#sec-intl.numberformat.supportedlocalesof
 vm::CallResult<std::vector<std::u16string>> NumberFormat::supportedLocalesOf(
     vm::Runtime &runtime,
     const std::vector<std::u16string> &locales,
     const Options &options) noexcept {
-  return std::vector<std::u16string>{u"en-CA", u"de-DE"};
+  // 1. Let availableLocales be %DateTimeFormat%.[[AvailableLocales]].
+  auto availableLocales = getAvailableLocales();
+  // 2. Let requestedLocales be ? CanonicalizeLocaleList(locales).
+  auto requestedLocales = getCanonicalLocales(runtime, locales);
+  // 3. Return ? (availableLocales, requestedLocales, options).
+  return supportedLocales(availableLocales, requestedLocales.getValue());
 }
 
+template <size_t N, size_t P = 0>
+static constexpr bool isSorted(const std::u16string_view (&v)[N]) {
+  if constexpr (P < N - 1) {
+    return v[P] < v[P + 1] && isSorted<N, P + 1>(v);
+  }
+  return true;
+}
+
+static constexpr std::u16string_view sanctionedIdentifiers[] = {
+    u"acre",       u"bit",        u"byte",
+    u"celsius",    u"centimeter", u"day",
+    u"degree",     u"fahrenheit", u"fluid-ounce",
+    u"foot",       u"gallon",     u"gigabit",
+    u"gigabyte",   u"gram",       u"hectare",
+    u"hour",       u"inch",       u"kilobit",
+    u"kilobyte",   u"kilogram",   u"kilometer",
+    u"liter",      u"megabit",    u"megabyte",
+    u"meter",      u"mile",       u"mile-scandinavian",
+    u"milliliter", u"millimeter", u"millisecond",
+    u"minute",     u"month",      u"ounce",
+    u"percent",    u"petabyte",   u"pound",
+    u"second",     u"stone",      u"terabit",
+    u"terabyte",   u"week",       u"yard",
+    u"year"};
+
+// https://402.ecma-international.org/8.0/#sec-issanctionedsimpleunitidentifier
+bool isSanctionedSimpleUnitIdentifier(std::u16string_view unitIdentifier) {
+  static_assert(
+      isSorted(sanctionedIdentifiers), "keep sanctionedIdentifiers sorted");
+  //  1. If unitIdentifier is listed in Table 2 (sanctionedIdentifiers) above,
+  //  return true
+  //  2. Else, return false.
+  return std::binary_search(
+      std::begin(sanctionedIdentifiers),
+      std::end(sanctionedIdentifiers),
+      unitIdentifier);
+}
+
+// https://402.ecma-international.org/8.0/#sec-iswellformedunitidentifier
+bool isWellFormedUnitIdentifier(std::u16string_view unitIdentifier) {
+  //  1. If the result of IsSanctionedSimpleUnitIdentifier(unitIdentifier) is
+  //  true, then a. Return true.
+  if (isSanctionedSimpleUnitIdentifier(unitIdentifier))
+    return true;
+  //  2. If the substring "-per-" does not occur exactly once in unitIdentifier,
+  //  then a. Return false.
+  std::u16string_view fractionDelimiter = u"-per-";
+  auto foundPos = unitIdentifier.find(fractionDelimiter);
+  if (foundPos == std::u16string_view::npos)
+    return false;
+  //  3. Let numerator be the substring of unitIdentifier from the beginning to
+  //  just before "-per-".
+  //  4. If the result of IsSanctionedSimpleUnitIdentifier(numerator) is false,
+  //  then a. Return false.
+  auto numerator = unitIdentifier.substr(0, foundPos);
+  if (!isSanctionedSimpleUnitIdentifier(numerator))
+    return false;
+  //  5. Let denominator be the substring of unitIdentifier from just after
+  //  "-per-" to the end.
+  //  6. If the result of IsSanctionedSimpleUnitIdentifier(denominator) is
+  //  false, then a. Return false.
+  const size_t denominatorPos = foundPos + fractionDelimiter.size();
+  auto denominator = unitIdentifier.substr(
+      denominatorPos, unitIdentifier.length() - denominatorPos);
+  if (!isSanctionedSimpleUnitIdentifier(denominator))
+    return false;
+  //  7. Return true.
+  return true;
+}
+
+// https://402.ecma-international.org/8.0/#sec-iswellformedcurrencycode
+bool isWellFormedCurrencyCode(std::u16string_view currencyCode) {
+  //  1. Let normalized be the result of mapping currency to upper case as
+  //  described in 6.1.
+  auto normalized = toASCIIUppercase(currencyCode);
+  //  2. If the number of elements in normalized is not 3, return false.
+  if (normalized.size() != 3)
+    return false;
+  //  3. If normalized contains any character that is not in the range "A" to
+  //  "Z" (U+0041 to U+005A), return false.
+  if (!llvh::all_of(normalized, [](auto c) { return c >= u'A' && c <= u'Z'; }))
+    return false;
+  //  4. Return true.
+  return true;
+}
+
+// https://402.ecma-international.org/8.0/#sec-setnumberformatunitoptions
+vm::ExecutionStatus NumberFormat::Impl::setNumberFormatUnitOptions(
+    vm::Runtime &runtime,
+    const Options &options) noexcept {
+  //  1. Assert: Type(intlObj) is Object.
+  //  2. Assert: Type(options) is Object.
+  //  3. Let style be ? GetOption(options, "style", "string", « "decimal",
+  //  "percent", "currency", "unit" », "decimal").
+  static constexpr std::u16string_view styleValues[] = {
+      u"decimal", u"percent", u"currency", u"unit"};
+  auto styleRes =
+      getOptionString(runtime, options, u"style", styleValues, u"decimal");
+  if (LLVM_UNLIKELY(styleRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto styleOpt = *styleRes;
+  //  4. Set intlObj.[[Style]] to style.
+  style = *styleOpt;
+  //  5. Let currency be ? GetOption(options, "currency", "string", undefined,
+  //  undefined).
+  auto currencyRes = getOptionString(runtime, options, u"currency", {}, {});
+  if (LLVM_UNLIKELY(currencyRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto currencyOpt = *currencyRes;
+  //  6. If currency is undefined, then
+  if (!currencyOpt) {
+    //  a. If style is "currency", throw a TypeError exception.
+    if (style == u"currency")
+      return runtime.raiseTypeError("Currency is undefined");
+    //  7. Else,
+  } else {
+    //  a. If the result of IsWellFormedCurrencyCode(currency) is false, throw
+    //  a RangeError exception.
+    if (!isWellFormedCurrencyCode(*currencyOpt))
+      return runtime.raiseRangeError("Currency is invalid");
+  }
+  //  8. Let currencyDisplay be ? GetOption(options, "currencyDisplay",
+  //  "string", « "code", "symbol", "narrowSymbol", "name" », "symbol").
+  static constexpr std::u16string_view currencyDisplayValues[] = {
+      u"code", u"symbol", u"narrowSymbol", u"name"};
+  auto currencyDisplayRes = getOptionString(
+      runtime, options, u"currencyDisplay", currencyDisplayValues, u"symbol");
+  if (LLVM_UNLIKELY(currencyDisplayRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto currencyDisplayOpt = *currencyDisplayRes;
+  //  9. Let currencySign be ? GetOption(options, "currencySign", "string", «
+  //  "standard", "accounting" », "standard").
+  static constexpr std::u16string_view currencySignValues[] = {
+      u"standard", u"accounting"};
+  auto currencySignRes = getOptionString(
+      runtime, options, u"currencySign", currencySignValues, u"standard");
+  if (LLVM_UNLIKELY(currencySignRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto currencySignOpt = *currencySignRes;
+  //  10. Let unit be ? GetOption(options, "unit", "string", undefined,
+  //  undefined).
+  auto unitRes = getOptionString(runtime, options, u"unit", {}, {});
+  if (LLVM_UNLIKELY(unitRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto unitOpt = *unitRes;
+  //  11. If unit is undefined, then
+  if (!unitOpt) {
+    //  a. If style is "unit", throw a TypeError exception.
+    if (style == u"unit")
+      return runtime.raiseTypeError("Unit is undefined");
+    //  12. Else,
+  } else {
+    //  a. If the result of IsWellFormedUnitIdentifier(unit) is false, throw a
+    //  RangeError exception.
+    if (!isWellFormedUnitIdentifier(*unitOpt))
+      return runtime.raiseRangeError("Unit is invalid");
+  }
+  //  13. Let unitDisplay be ? GetOption(options, "unitDisplay", "string", «
+  //  "short", "narrow", "long" », "short").
+  static constexpr std::u16string_view unitDisplayValues[] = {
+      u"short", u"narrow", u"long"};
+  auto unitDisplayRes = getOptionString(
+      runtime, options, u"unitDisplay", unitDisplayValues, u"short");
+  if (LLVM_UNLIKELY(unitDisplayRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto unitDisplayOpt = *unitDisplayRes;
+  //  14. If style is "currency", then
+  if (style == u"currency") {
+    //  a. Let currency be the result of converting currency to upper case as
+    //  specified in 6.1. b. Set intlObj.[[Currency]] to currency. c. Set
+    //  intlObj.[[CurrencyDisplay]] to currencyDisplay. d. Set
+    //  intlObj.[[CurrencySign]] to currencySign.
+    currency = toASCIIUppercase(*currencyOpt);
+    currencyDisplay = *currencyDisplayOpt;
+    currencySign = *currencySignOpt;
+  }
+  //  15. If style is "unit", then
+  if (style == u"unit") {
+    //  a. Set intlObj.[[Unit]] to unit.
+    //  b. Set intlObj.[[UnitDisplay]] to unitDisplay.
+    unit = unitOpt.value_or(u"");
+    unitDisplay = *unitDisplayOpt;
+  }
+  return vm::ExecutionStatus::RETURNED;
+}
+
+// https://402.ecma-international.org/8.0/#sec-setnfdigitoptions
+vm::ExecutionStatus NumberFormat::Impl::setNumberFormatDigitOptions(
+    vm::Runtime &runtime,
+    const Options &options,
+    uint8_t mnfdDefault,
+    uint8_t mxfdDefault,
+    std::u16string_view notation) noexcept {
+  // 1. Assert: Type(intlObj) is Object.
+  // 2. Assert: Type(options) is Object.
+  // 3. Assert: Type(mnfdDefault) is Number.
+  // 4. Assert: Type(mxfdDefault) is Number.
+  // 5. Let mnid be ? GetNumberOption(options, "minimumIntegerDigits,", 1, 21,
+  // 1).
+  auto mnidRes =
+      getNumberOption(runtime, options, u"minimumIntegerDigits", 1, 21, 1);
+  if (LLVM_UNLIKELY(mnidRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto mnidOpt = *mnidRes;
+  // 6. Let mnfd be ? Get(options, "minimumFractionDigits").
+  auto mnfdIt = options.find(u"minimumFractionDigits");
+  // 7. Let mxfd be ? Get(options, "maximumFractionDigits").
+  auto mxfdIt = options.find(u"maximumFractionDigits");
+  // 8. Let mnsd be ? Get(options, "minimumSignificantDigits").
+  auto mnsdIt = options.find(u"minimumSignificantDigits");
+  // 9. Let mxsd be ? Get(options, "maximumSignificantDigits").
+  auto mxsdIt = options.find(u"maximumSignificantDigits");
+  // 10. Set intlObj.[[MinimumIntegerDigits]] to mnid.
+  minimumIntegerDigits = *mnidOpt;
+  // 11. If mnsd is not undefined or mxsd is not undefined, then
+  if (mnsdIt != options.end() || mxsdIt != options.end()) {
+    // a. Set intlObj.[[RoundingType]] to significantDigits.
+    roundingType = u"significantDigits";
+    // b. Let mnsd be ? DefaultNumberOption(mnsd, 1, 21, 1).
+    auto mnsdValue =
+        mnsdIt == options.end() ? std::nullopt : std::optional(mnsdIt->second);
+    auto mnsdRes = defaultNumberOption(
+        runtime, u"minimumSignificantDigits", mnsdValue, 1, 21, 1);
+    if (LLVM_UNLIKELY(mnsdRes == vm::ExecutionStatus::EXCEPTION))
+      return vm::ExecutionStatus::EXCEPTION;
+    auto mnsdOpt = *mnsdRes;
+    // c. Let mxsd be ? DefaultNumberOption(mxsd, mnsd, 21, 21).
+    auto mxsdValue =
+        mxsdIt == options.end() ? std::nullopt : std::optional(mxsdIt->second);
+    auto mxsdRes = defaultNumberOption(
+        runtime, u"maximumSignificantDigits", mxsdValue, *mnsdOpt, 21, 21);
+    if (LLVM_UNLIKELY(mxsdRes == vm::ExecutionStatus::EXCEPTION))
+      return vm::ExecutionStatus::EXCEPTION;
+    auto mxsdOpt = *mxsdRes;
+    // d. Set intlObj.[[MinimumSignificantDigits]] to mnsd.
+    minimumSignificantDigits = *mnsdOpt;
+    // e. Set intlObj.[[MaximumSignificantDigits]] to mxsd.
+    maximumSignificantDigits = *mxsdOpt;
+    // 12. Else if mnfd is not undefined or mxfd is not undefined, then
+  } else if (mnfdIt != options.end() || mxfdIt != options.end()) {
+    // a. Set intlObj.[[RoundingType]] to fractionDigits.
+    roundingType = u"fractionDigits";
+    // b. Let mnfd be ? DefaultNumberOption(mnfd, 0, 20, undefined).
+    auto mnfdValue =
+        mnfdIt == options.end() ? std::nullopt : std::optional(mnfdIt->second);
+    auto mnfdRes = defaultNumberOption(
+        runtime, u"minimumFractionDigits", mnfdValue, 0, 20, {});
+    if (LLVM_UNLIKELY(mnfdRes == vm::ExecutionStatus::EXCEPTION))
+      return vm::ExecutionStatus::EXCEPTION;
+    auto mnfdOpt = *mnfdRes;
+    // c. Let mxfd be ? DefaultNumberOption(mxfd, 0, 20, undefined).
+    auto mxfdValue =
+        mxfdIt == options.end() ? std::nullopt : std::optional(mxfdIt->second);
+    auto mxfdRes = defaultNumberOption(
+        runtime, u"maximumFractionDigits", mxfdValue, 0, 20, {});
+    if (LLVM_UNLIKELY(mxfdRes == vm::ExecutionStatus::EXCEPTION))
+      return vm::ExecutionStatus::EXCEPTION;
+    auto mxfdOpt = *mxfdRes;
+    // d. If mnfd is undefined, set mnfd to min(mnfdDefault, mxfd).
+    if (!mnfdOpt) {
+      mnfdOpt = std::min(mnfdDefault, *mxfdOpt);
+      // e. Else if mxfd is undefined, set mxfd to max(mxfdDefault, mnfd).
+    } else if (!mxfdOpt) {
+      mxfdOpt = std::max(mxfdDefault, *mnfdOpt);
+      // f. Else if mnfd is greater than mxfd, throw a RangeError exception.
+    } else if (*mnfdOpt > *mxfdOpt) {
+      return runtime.raiseRangeError(
+          "minimumFractionDigits is greater than maximumFractionDigits");
+    }
+    // g. Set intlObj.[[MinimumFractionDigits]] to mnfd.
+    minimumFractionDigits = *mnfdOpt;
+    // h. Set intlObj.[[MaximumFractionDigits]] to mxfd.
+    maximumFractionDigits = *mxfdOpt;
+    // 13. Else if notation is "compact", then
+  } else if (notation == u"compact") {
+    // a. Set intlObj.[[RoundingType]] to compactRounding.
+    roundingType = u"compactRounding";
+    // 14. Else,
+  } else {
+    // a. Set intlObj.[[RoundingType]] to fractionDigits.
+    roundingType = u"fractionDigits";
+    // b. Set intlObj.[[MinimumFractionDigits]] to mnfdDefault.
+    minimumFractionDigits = mnfdDefault;
+    // c. Set intlObj.[[MaximumFractionDigits]] to mxfdDefault.
+    maximumFractionDigits = mxfdDefault;
+  }
+  return vm::ExecutionStatus::RETURNED;
+}
+
+struct CurrencyInfo {
+  std::u16string_view code;
+  uint8_t digits;
+};
+
+template <size_t N, size_t P = 0>
+static constexpr bool isSorted(const CurrencyInfo (&v)[N]) {
+  if constexpr (P < N - 1) {
+    return v[P].code < v[P + 1].code && isSorted<N, P + 1>(v);
+  }
+  return true;
+}
+
+//  https://en.wikipedia.org/wiki/ISO_4217#Active_codes
+static constexpr CurrencyInfo currencies[] = {
+    {u"BHD", 3}, {u"BIF", 0}, {u"CLF", 4}, {u"CLP", 0}, {u"DJF", 0},
+    {u"GNF", 0}, {u"IQD", 3}, {u"ISK", 0}, {u"JOD", 3}, {u"JPY", 0},
+    {u"KMF", 0}, {u"KRW", 0}, {u"KWD", 3}, {u"LYD", 3}, {u"OMR", 3},
+    {u"PYG", 0}, {u"RWF", 0}, {u"TND", 3}, {u"UGX", 0}, {u"UYI", 0},
+    {u"UYW", 4}, {u"VND", 0}, {u"VUV", 0}, {u"XAF", 0}, {u"XOF", 0},
+    {u"XPF", 0}};
+
+uint8_t getCurrencyDigits(std::u16string_view code) {
+  //  1. If the ISO 4217 currency and funds code list contains currency as an
+  //  alphabetic code, return the minor unit value corresponding to the currency
+  //  from the list; otherwise, return 2.
+  static_assert(isSorted(currencies), "keep currencies sorted by their code");
+  auto it = llvh::lower_bound(currencies, code, [](auto currency, auto toFind) {
+    return currency.code < toFind;
+  });
+  return (it != std::end(currencies) && it->code == code) ? it->digits : 2;
+};
+
+// https://402.ecma-international.org/8.0/#sec-initializenumberformat
 vm::ExecutionStatus NumberFormat::initialize(
     vm::Runtime &runtime,
     const std::vector<std::u16string> &locales,
     const Options &options) noexcept {
-  impl_->locale = u"en-US";
+  // 1. Let requestedLocales be ? CanonicalizeLocaleList(locales).
+  const auto requestedLocales = canonicalizeLocaleList(runtime, locales);
+  if (LLVM_UNLIKELY(requestedLocales == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 2. Set options to ? CoerceOptionsToObject(options).
+  // 3. Let opt be a new Record.
+  std::unordered_map<std::u16string, std::u16string> opt;
+  // Create a copy of the unordered map &options
+  // 4. Let matcher be ? GetOption(options, "localeMatcher", "string", «
+  // "lookup", "best fit" », "best fit").
+  static constexpr std::u16string_view localeMatcherValues[] = {
+      u"lookup", u"best fit"};
+  auto matcherRes = getOptionString(
+      runtime, options, u"localeMatcher", localeMatcherValues, u"best fit");
+  if (LLVM_UNLIKELY(matcherRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto matcherOpt = *matcherRes;
+  // 5. Set opt.[[localeMatcher]] to matcher.
+  opt.emplace(u"localeMatcher", *matcherOpt);
+  // 6. Let numberingSystem be ? GetOption(options, "numberingSystem", "string",
+  // undefined, undefined).
+  auto numberingSystemRes =
+      getOptionString(runtime, options, u"numberingSystem", {}, {});
+  if (LLVM_UNLIKELY(numberingSystemRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto numberingSystemOpt = *numberingSystemRes;
+  // 7. If numberingSystem is not undefined, then
+  //   a. If numberingSystem does not match the Unicode Locale Identifier type
+  //   nonterminal, throw a RangeError exception.
+  // 8. Set opt.[[nu]] to numberingSystem.
+  if (numberingSystemOpt) {
+    auto numberingSystem = *numberingSystemOpt;
+    if (!isUnicodeExtensionType(numberingSystem)) {
+      return runtime.raiseRangeError(
+          vm::TwineChar16("Invalid numbering system: ") +
+          vm::TwineChar16(numberingSystem.c_str()));
+    }
+    opt.emplace(u"nu", numberingSystem);
+  }
+  // 9. Let localeData be %NumberFormat%.[[LocaleData]].
+  // 10. Let r be ResolveLocale(%NumberFormat%.[[AvailableLocales]],
+  // requestedLocales, opt, %NumberFormat%.[[RelevantExtensionKeys]],
+  // localeData).
+  static constexpr std::u16string_view relevantExtensionKeys[] = {u"nu"};
+  auto r =
+      resolveLocale(locales, *requestedLocales, opt, relevantExtensionKeys);
+  // 11. Set numberFormat.[[Locale]] to r.[[locale]].
+  impl_->locale = r.locale;
+  // 12. Set numberFormat.[[DataLocale]] to r.[[dataLocale]].
+  impl_->dataLocale = r.dataLocale;
+  // 13. Set numberFormat.[[NumberingSystem]] to r.[[nu]].
+  // 14. Perform ? SetNumberFormatUnitOptions(numberFormat, options).
+  auto setUnitOptionsRes = impl_->setNumberFormatUnitOptions(runtime, options);
+  if (LLVM_UNLIKELY(setUnitOptionsRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 15. Let style be numberFormat.[[Style]].
+  auto style = impl_->style;
+  uint8_t mnfdDefault, mxfdDefault;
+  // 16. If style is "currency", then
+  if (style == u"currency") {
+    // a. Let currency be numberFormat.[[Currency]].
+    // b. Let cDigits be CurrencyDigits(currency).
+    auto cDigits = getCurrencyDigits(impl_->currency);
+    // c. Let mnfdDefault be cDigits.
+    mnfdDefault = cDigits;
+    // d. Let mxfdDefault be cDigits.
+    mxfdDefault = cDigits;
+  } else {
+    // 17. Else,
+    // a. Let mnfdDefault be 0.
+    mnfdDefault = 0;
+    // b. If style is "percent", then
+    if (style == u"percent") {
+      // i. Let mxfdDefault be 0.
+      mxfdDefault = 0;
+    } else {
+      // c. Else,
+      // i. Let mxfdDefault be 3.
+      mxfdDefault = 3;
+    }
+  }
+  // 18. Let notation be ? GetOption(options, "notation", "string", «
+  // "standard", "scientific", "engineering", "compact" », "standard").
+  static constexpr std::u16string_view notationValues[] = {
+      u"standard", u"scientific", u"engineering", u"compact"};
+  auto notationRes = getOptionString(
+      runtime, options, u"notation", notationValues, u"standard");
+  if (LLVM_UNLIKELY(notationRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto notationOpt = *notationRes;
+  // 19. Set numberFormat.[[Notation]] to notation.
+  impl_->notation = *notationOpt;
+  // Perform ? SetNumberFormatDigitOptions(numberFormat, options, mnfdDefault,
+  // mxfdDefault, notation).
+  auto setDigitOptionsRes = impl_->setNumberFormatDigitOptions(
+      runtime, options, mnfdDefault, mxfdDefault, impl_->notation);
+  if (LLVM_UNLIKELY(setDigitOptionsRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  // 21. Let compactDisplay be ? GetOption(options, "compactDisplay", "string",
+  // « "short", "long" », "short").
+  static constexpr std::u16string_view compactDisplayValues[] = {
+      u"short", u"long"};
+  auto compactDisplayRes = getOptionString(
+      runtime, options, u"compactDisplay", compactDisplayValues, u"short");
+  if (LLVM_UNLIKELY(compactDisplayRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto compactDisplayOpt = *compactDisplayRes;
+  // 22. If notation is "compact", then
+  if (*notationOpt == u"compact")
+    //   a. Set numberFormat.[[CompactDisplay]] to compactDisplay.
+    impl_->compactDisplay = *compactDisplayOpt;
+  // 23. Let useGrouping be ? GetOption(options, "useGrouping", "boolean",
+  // undefined, true).
+  auto useGroupingOpt = getOptionBool(runtime, options, u"useGrouping", true);
+  // 24. Set numberFormat.[[UseGrouping]] to useGrouping.
+  impl_->useGrouping = *useGroupingOpt;
+  // 25. Let signDisplay be ? GetOption(options, "signDisplay", "string", «
+  // "auto", "never", "always", "exceptZero" », "auto").
+  static constexpr std::u16string_view signDisplayValues[] = {
+      u"auto", u"never", u"always", u"exceptZero"};
+  auto signDisplayRes = getOptionString(
+      runtime, options, u"signDisplay", signDisplayValues, u"auto");
+  if (LLVM_UNLIKELY(signDisplayRes == vm::ExecutionStatus::EXCEPTION))
+    return vm::ExecutionStatus::EXCEPTION;
+  auto signDisplayOpt = *signDisplayRes;
+  // 26. Set numberFormat.[[SignDisplay]] to signDisplay.
+  impl_->signDisplay = *signDisplayOpt;
   return vm::ExecutionStatus::RETURNED;
 }
 
+// https://402.ecma-international.org/8.0/#sec-intl.numberformat.prototype.resolvedoptions
 Options NumberFormat::resolvedOptions() noexcept {
   Options options;
-  options.emplace(u"locale", Option(impl_->locale));
-  options.emplace(u"numeric", Option(false));
+  options.emplace(u"locale", impl_->locale);
+  options.emplace(u"dataLocale", impl_->dataLocale);
+  options.emplace(u"style", impl_->style);
+  options.emplace(u"currency", impl_->currency);
+  options.emplace(u"currencyDisplay", impl_->currencyDisplay);
+  options.emplace(u"currencySign", impl_->currencySign);
+  options.emplace(u"unit", impl_->unit);
+  options.emplace(u"unitDisplay", impl_->unitDisplay);
+  options.emplace(u"minimumIntegerDigits", (double)impl_->minimumIntegerDigits);
+  options.emplace(
+      u"minimumFractionDigits", (double)impl_->minimumFractionDigits);
+  options.emplace(
+      u"maximumFractionDigits", (double)impl_->maximumFractionDigits);
+  options.emplace(
+      u"minimumSignificantDigits", (double)impl_->minimumSignificantDigits);
+  options.emplace(
+      u"maximumSignificantDigits", (double)impl_->maximumSignificantDigits);
+  options.emplace(u"useGrouping", impl_->useGrouping);
+  options.emplace(u"roundingType", impl_->roundingType);
+  options.emplace(u"notation", impl_->notation);
+  options.emplace(u"compactDisplay", impl_->compactDisplay);
+  options.emplace(u"signDisplay", impl_->signDisplay);
   return options;
 }
 
+// https://402.ecma-international.org/8.0/#sec-formatnumber
+std::u16string NumberFormat::Impl::format(double number) noexcept {
+  // NOTE: NSNumberFormatter has following limitations:
+  // - "scientific" notation is supprted, "engineering" and "compact" are not.
+  // - roundingType is not supported.
+  // - compactDisplay is not supported.
+  // - signDisplay is not supported.
+  // - NSNumberFormatter has maximumIntegerDigits, which is 42 by default
+  auto nsLocale =
+      [NSLocale localeWithLocaleIdentifier:u16StringToNSString(locale)];
+  auto nf = [NSNumberFormatter new];
+  nf.locale = nsLocale;
+  if (style == u"decimal") {
+    nf.numberStyle = NSNumberFormatterDecimalStyle;
+    if (notation == u"scientific") {
+      nf.numberStyle = NSNumberFormatterScientificStyle;
+    }
+  } else if (style == u"currency") {
+    nf.numberStyle = NSNumberFormatterCurrencyStyle;
+    nf.currencyCode = u16StringToNSString(currency);
+    if (currencyDisplay == u"code") {
+      nf.numberStyle = NSNumberFormatterCurrencyISOCodeStyle;
+    } else if (currencyDisplay == u"symbol") {
+      nf.numberStyle = NSNumberFormatterCurrencyStyle;
+    } else if (currencyDisplay == u"narrowSymbol") {
+      nf.numberStyle = NSNumberFormatterCurrencyStyle;
+    } else if (currencyDisplay == u"name") {
+      nf.numberStyle = NSNumberFormatterCurrencyPluralStyle;
+    }
+    if (signDisplay != u"never" && currencySign == u"accounting") {
+      nf.numberStyle = NSNumberFormatterCurrencyAccountingStyle;
+    }
+  } else if (style == u"percent") {
+    nf.numberStyle = NSNumberFormatterPercentStyle;
+  } else if (style == u"unit") {
+    nf.numberStyle = NSNumberFormatterNoStyle;
+  }
+  nf.minimumIntegerDigits = minimumIntegerDigits;
+  nf.minimumFractionDigits = minimumFractionDigits;
+  nf.maximumFractionDigits = maximumFractionDigits;
+  nf.minimumSignificantDigits = minimumSignificantDigits;
+  if (maximumSignificantDigits > 0) {
+    nf.maximumSignificantDigits = maximumSignificantDigits;
+  }
+  nf.usesGroupingSeparator = useGrouping;
+  if (style == u"unit") {
+    auto mf = [NSMeasurementFormatter new];
+    mf.numberFormatter = nf;
+    mf.locale = nsLocale;
+    if (unitDisplay == u"short") {
+      mf.unitStyle = NSFormattingUnitStyleShort;
+    } else if (unitDisplay == u"narrow") {
+      mf.unitStyle = NSFormattingUnitStyleMedium;
+    } else if (unitDisplay == u"long") {
+      mf.unitStyle = NSFormattingUnitStyleLong;
+    }
+    auto u = [[NSUnit alloc] initWithSymbol:u16StringToNSString(unit)];
+    auto m = [[NSMeasurement alloc] initWithDoubleValue:number unit:u];
+    return nsStringToU16String([mf stringFromMeasurement:m]);
+  }
+  return nsStringToU16String(
+      [nf stringFromNumber:[NSNumber numberWithDouble:number]]);
+}
+
 std::u16string NumberFormat::format(double number) noexcept {
-  auto s = std::to_string(number);
-  return std::u16string(s.begin(), s.end());
+  return impl_->format(number);
 }
 
 std::vector<std::unordered_map<std::u16string, std::u16string>>
 NumberFormat::formatToParts(double number) noexcept {
-  std::unordered_map<std::u16string, std::u16string> part;
-  part[u"type"] = u"integer";
-  // This isn't right, but I didn't want to do more work for a stub.
-  std::string s = std::to_string(number);
-  part[u"value"] = {s.begin(), s.end()};
-  return std::vector<std::unordered_map<std::u16string, std::u16string>>{part};
+  llvm_unreachable("formatToParts is unimplemented on Apple platforms");
 }
 
 } // namespace platform_intl

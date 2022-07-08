@@ -5,7 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// RUN: %fnc < %s
+// RUN: %fn_dir/run_fnc.sh %fnc %s %t && %t | %FileCheck %s --match-full-lines
+
+function println(x){
+  print(x);
+  print("\n");
+}
 
 var a = true;
 var b = 0;
@@ -14,4 +19,12 @@ if(a){
 } else{
   b = 5;
 }
-print(b);
+println(b);
+// CHECK: 10.000000
+
+var x = undefined;
+if(!x) {
+  b = 42;
+}
+println(-b);
+// CHECK-NEXT: -42.000000

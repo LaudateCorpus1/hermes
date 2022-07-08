@@ -156,7 +156,7 @@ class MallocGC final : public GCBase {
       std::shared_ptr<StorageProvider> provider,
       experiments::VMExperimentFlags vmExperimentFlags);
 
-  ~MallocGC();
+  ~MallocGC() override;
 
   /// Checks if a requested \p size can fit in the heap. If it can't, a
   /// collection occurs. If it still can't after the collection, OOM is
@@ -217,8 +217,10 @@ class MallocGC final : public GCBase {
   bool dbgContains(const void *p) const override;
 #endif
 
+#ifdef HERMES_MEMORY_INSTRUMENTATION
   /// Same as in superclass GCBase.
   virtual void createSnapshot(llvh::raw_ostream &os) override;
+#endif
 
   virtual void creditExternalMemory(GCCell *alloc, uint32_t size) override;
   virtual void debitExternalMemory(GCCell *alloc, uint32_t size) override;

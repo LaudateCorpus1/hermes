@@ -8,12 +8,14 @@
  * @format
  */
 
+import type {TransformVisitor} from '../../src/transform/transform';
+
 import {transform as transformOriginal} from '../../src/transform/transform';
 import * as t from '../../src/generated/node-types';
 // $FlowExpectedError[cannot-resolve-module]
 import prettierConfig from '../../../.prettierrc.json';
 
-function transform(code, visitors) {
+function transform(code: string, visitors: TransformVisitor) {
   return transformOriginal(code, visitors, prettierConfig);
 }
 
@@ -1230,5 +1232,24 @@ y; // EOL comment
 `);
       });
     });
+  });
+
+  it('should not crash on optional chaining', () => {
+    const code = `\
+x?.y;
+x?.();
+`;
+    const result = transform(code, context => ({
+      Program(node) {
+        context.addTrailingInlineComments(
+          node.body[0],
+          t.LineComment({value: 'test'}),
+        );
+      },
+    }));
+    expect(result).toBe(`\
+x?.y; //test
+x?.();
+`);
   });
 });

@@ -89,9 +89,6 @@ vm_allocate_impl(void *addr, size_t sz, DWORD flags) {
 static llvh::ErrorOr<void *> vm_allocate_impl(size_t sz) {
   // Default flags are to reserve and commit.
 
-  // TODO(T40416012) introduce explicit "commit" in OSCompat abstraction of
-  // virtual memory
-
   // In POSIX, a mem page implicitly transitions from "reserved" state to
   // "committed" state on access. However, on Windows, accessing
   // "reserved" but not "committed" page results in an access violation.
@@ -109,7 +106,8 @@ static std::error_code vm_free_impl(void *p, size_t sz) {
              : std::error_code(GetLastError(), std::system_category());
 }
 
-llvh::ErrorOr<void *> vm_allocate(size_t sz) {
+// TODO(T40416012): Use hint on Windows.
+llvh::ErrorOr<void *> vm_allocate(size_t sz, void * /* hint */) {
 #ifndef NDEBUG
   assert(sz % page_size() == 0);
   if (testPgSz != 0 && testPgSz > static_cast<size_t>(page_size_real())) {
@@ -124,7 +122,9 @@ llvh::ErrorOr<void *> vm_allocate(size_t sz) {
   return vm_allocate_impl(sz);
 }
 
-llvh::ErrorOr<void *> vm_allocate_aligned(size_t sz, size_t alignment) {
+// TODO(T40416012): Use hint on Windows.
+llvh::ErrorOr<void *>
+vm_allocate_aligned(size_t sz, size_t alignment, void * /* hint */) {
   /// A value of 3 means vm_allocate_aligned will:
   /// 1. Opportunistic: allocate and see if it happens to be aligned
   /// 2. Regular: Try aligned allocation 3 times (see below for details)
@@ -241,6 +241,20 @@ void vm_free_aligned(void *p, size_t sz) {
   }
 #endif
 }
+
+// TODO(T40416012): Implement these functions for Windows.
+llvh::ErrorOr<void *>
+vm_reserve_aligned(size_t sz, size_t alignment, void * /* hint */) {
+  return vm_allocate_aligned(sz, alignment);
+}
+void vm_release_aligned(void *p, size_t sz) {
+  vm_free_aligned(p, sz);
+}
+
+llvh::ErrorOr<void *> vm_commit(void *p, size_t) {
+  return p;
+}
+void vm_uncommit(void *, size_t) {}
 
 void vm_hugepage(void *p, size_t sz) {
   assert(

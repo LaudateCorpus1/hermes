@@ -48,6 +48,7 @@ class JSArrayBuffer final : public JSObject {
 
   /// ES7 6.2.6.2
   static void copyDataBlockBytes(
+      Runtime &runtime,
       JSArrayBuffer *dst,
       size_type dstIndex,
       JSArrayBuffer *src,
@@ -66,9 +67,13 @@ class JSArrayBuffer final : public JSObject {
   /// \return A pointer to the buffer owned by this object. This can be null
   ///   if the ArrayBuffer is empty.
   /// \pre attached() must be true
-  uint8_t *getDataBlock() {
+  uint8_t *getDataBlock(Runtime &runtime) {
+    // This check should never fail, because all ways to illegally access
+    // ArrayBuffer should raise exceptions. It's here as a last line of defense.
+    if (!runtime.hasArrayBuffer())
+      hermes_fatal("Illegal access to ArrayBuffer");
     assert(attached() && "Cannot get a data block from a detached ArrayBuffer");
-    return data_;
+    return data_.get(runtime);
   }
 
   /// Get the size of this buffer.
@@ -91,11 +96,13 @@ class JSArrayBuffer final : public JSObject {
  protected:
   static void _finalizeImpl(GCCell *cell, GC &gc);
   static size_t _mallocSizeImpl(GCCell *cell);
+#ifdef HERMES_MEMORY_INSTRUMENTATION
   static void _snapshotAddEdgesImpl(GCCell *cell, GC &gc, HeapSnapshot &snap);
   static void _snapshotAddNodesImpl(GCCell *cell, GC &gc, HeapSnapshot &snap);
+#endif
 
  private:
-  uint8_t *data_;
+  XorPtr<uint8_t> data_;
   size_type size_;
   bool attached_;
 

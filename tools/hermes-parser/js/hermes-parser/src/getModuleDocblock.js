@@ -11,53 +11,38 @@
 'use strict';
 
 import type {HermesNode} from './HermesAST';
-import type {Program} from 'hermes-estree';
+import type {DocblockDirectives, Program} from 'hermes-estree';
 
-const commentStartRe = /^\/\*\*?/;
-const commentEndRe = /\*+\/$/;
-const wsRe = /[\t ]+/g;
-const stringStartRe = /(\r?\n|^) *\*/g;
-const multilineRe =
-  /(?:^|\r?\n) *(@[^\r\n]*?) *\r?\n *([^@\r\n\s][^@\r\n]+?) *\r?\n/g;
-const propertyRe = /(?:^|\r?\n) *@(\S+) *([^\r\n]*)/g;
+const DIRECTIVE_REGEX = /^\s*@([a-zA-Z0-9_-]+)( +.+)?$/;
 
-/**
- * Returns an object of `{[prop]: value}`
- * If a property appers more than once the last one will be returned
- * unless coalesceRepeatedValues is true, in which case it will return an array
- */
-function parse(docblockIn: string) {
-  let docblock = docblockIn
-    .replace(commentStartRe, '')
-    .replace(commentEndRe, '')
-    .replace(wsRe, ' ')
-    .replace(stringStartRe, '$1');
+export function parseDocblockString(docblock: string): DocblockDirectives {
+  const directiveLines = docblock
+    .split('\n')
+    // remove the leading " *" from each line
+    .map(line => line.trimStart().replace(/^\* ?/, '').trim())
+    .filter(line => line.startsWith('@'));
 
-  // Normalize multi-line directives
-  let prev = '';
-  while (prev !== docblock) {
-    prev = docblock;
-    docblock = docblock.replace(multilineRe, '\n$1 $2\n');
-  }
-  docblock = docblock.trim();
-
-  const pairs = [];
-  let match;
-  while ((match = propertyRe.exec(docblock))) {
-    pairs.push([match[1], match[2] ?? '']);
-  }
-
-  const result: {
+  const directives: {
     [string]: Array<string>,
   } = {};
-  for (const [k, v] of pairs) {
-    if (result[k]) {
-      result[k].push(v);
+
+  for (const line of directiveLines) {
+    const match = DIRECTIVE_REGEX.exec(line);
+    if (match == null) {
+      continue;
+    }
+    const name = match[1];
+    // explicitly use an empty string if there's no value
+    // this way the array length tracks how many instances of the directive there was
+    const value = (match[2] ?? '').trim();
+    if (directives[name]) {
+      directives[name].push(value);
     } else {
-      result[k] = [v];
+      directives[name] = [value];
     }
   }
-  return result;
+
+  return directives;
 }
 
 export function getModuleDocblock(
@@ -75,8 +60,32 @@ export function getModuleDocblock(
       return null;
     }
 
-    const firstComment = program.comments[0];
-    if (firstComment.type !== 'Block') {
+    const firstComment = (() => {
+      const first = program.comments[0];
+      if (first.type === 'Block') {
+        return first;
+      }
+
+      if (program.comments.length === 1) {
+        return null;
+      }
+
+      // ESLint will always strip out the shebang comment from the code before passing it to the parser
+      // https://github.com/eslint/eslint/blob/21d647904dc30f9484b22acdd9243a6d0ecfba38/lib/linter/linter.js#L779
+      // this means that we're forced to parse it as a line comment :(
+      // this hacks around it by selecting the second comment in this case
+      const second = program.comments[1];
+      if (
+        first.type === 'Line' &&
+        first.range[0] === 0 &&
+        second.type === 'Block'
+      ) {
+        return second;
+      }
+
+      return null;
+    })();
+    if (firstComment == null) {
       return null;
     }
 
@@ -101,7 +110,7 @@ export function getModuleDocblock(
   }
 
   return {
-    directives: parse(docblockNode.value),
+    directives: parseDocblockString(docblockNode.value),
     comment: docblockNode,
   };
 }

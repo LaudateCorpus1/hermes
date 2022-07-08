@@ -224,11 +224,11 @@ Runtime::Runtime(
       hasES6Promise_(runtimeConfig.getES6Promise()),
       hasES6Proxy_(runtimeConfig.getES6Proxy()),
       hasIntl_(runtimeConfig.getIntl()),
+      hasArrayBuffer_(runtimeConfig.getArrayBuffer()),
       shouldRandomizeMemoryLayout_(runtimeConfig.getRandomizeMemoryLayout()),
       bytecodeWarmupPercent_(runtimeConfig.getBytecodeWarmupPercent()),
       trackIO_(runtimeConfig.getTrackIO()),
       vmExperimentFlags_(runtimeConfig.getVMExperimentFlags()),
-      runtimeStats_(runtimeConfig.getEnableSampledStats()),
       commonStorage_(
           createRuntimeCommonStorage(runtimeConfig.getTraceEnabled())),
       stackPointer_(),
@@ -532,16 +532,20 @@ void Runtime::markRoots(
   {
     MarkRootsPhaseTimer timer(*this, RootAcceptor::Section::IdentifierTable);
     if (markLongLived) {
+#ifdef HERMES_MEMORY_INSTRUMENTATION
       // Need to add nodes before the root section, and edges during the root
       // section.
       acceptor.provideSnapshot([this](HeapSnapshot &snap) {
         identifierTable_.snapshotAddNodes(snap);
       });
+#endif
       acceptor.beginRootSection(RootAcceptor::Section::IdentifierTable);
       identifierTable_.markIdentifiers(acceptor, getHeap());
+#ifdef HERMES_MEMORY_INSTRUMENTATION
       acceptor.provideSnapshot([this](HeapSnapshot &snap) {
         identifierTable_.snapshotAddEdges(snap);
       });
+#endif
       acceptor.endRootSection();
     }
   }
@@ -2036,7 +2040,7 @@ ExecutionStatus Runtime::notifyTimeout() {
   return raiseTimeoutError();
 }
 
-#ifdef HERMES_ENABLE_ALLOCATION_LOCATION_TRACES
+#ifdef HERMES_MEMORY_INSTRUMENTATION
 
 std::pair<const CodeBlock *, const inst::Inst *>
 Runtime::getCurrentInterpreterLocation(const inst::Inst *ip) const {
@@ -2118,35 +2122,7 @@ void Runtime::pushCallStackImpl(
   stackTracesTree_->pushCallStack(*this, codeBlock, ip);
 }
 
-#else // !defined(HERMES_ENABLE_ALLOCATION_LOCATION_TRACES)
-
-std::pair<const CodeBlock *, const inst::Inst *>
-Runtime::getCurrentInterpreterLocation(const inst::Inst *ip) const {
-  return {nullptr, nullptr};
-}
-
-StackTracesTreeNode *Runtime::getCurrentStackTracesTreeNode(
-    const inst::Inst *ip) {
-  return nullptr;
-}
-
-void Runtime::enableAllocationLocationTracker(
-    std::function<void(
-        uint64_t,
-        std::chrono::microseconds,
-        std::vector<GCBase::AllocationLocationTracker::HeapStatsUpdate>)>) {}
-
-void Runtime::disableAllocationLocationTracker(bool) {}
-
-void Runtime::enableSamplingHeapProfiler(size_t, int64_t) {}
-
-void Runtime::disableSamplingHeapProfiler(llvh::raw_ostream &) {}
-
-void Runtime::popCallStackImpl() {}
-
-void Runtime::pushCallStackImpl(const CodeBlock *, const inst::Inst *) {}
-
-#endif // !defined(HERMES_ENABLE_ALLOCATION_LOCATION_TRACES)
+#endif // HERMES_MEMORY_INSTRUMENTATION
 
 } // namespace vm
 } // namespace hermes
