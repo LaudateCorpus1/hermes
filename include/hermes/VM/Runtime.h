@@ -408,6 +408,17 @@ class Runtime : public PointerBase,
   /// exception" (https://html.spec.whatwg.org/C#microtask-queuing).
   ExecutionStatus drainJobs();
 
+  // ES2021 9.12 "When the abstract operation AddToKeptObjects is called with a
+  // target object reference, it adds the target to a list that will point
+  // strongly at the target until ClearKeptObjects is called."
+  ExecutionStatus addToKeptObjects(Handle<JSObject> obj);
+
+  // ES2021 9.11 "ECMAScript implementations are
+  // expected to call ClearKeptObjects when a synchronous sequence of ECMAScript
+  // executions completes." This method clears all kept WeakRefs and allows
+  // their targets to be eligible for garbage collection again.
+  void clearKeptObjects();
+
   IdentifierTable &getIdentifierTable() {
     return identifierTable_;
   }
@@ -849,8 +860,8 @@ class Runtime : public PointerBase,
     return hasArrayBuffer_;
   }
 
-  bool useJobQueue() const {
-    return getVMExperimentFlags() & experiments::JobQueue;
+  bool hasMicrotaskQueue() const {
+    return hasMicrotaskQueue_;
   }
 
   bool builtinsAreFrozen() const {
@@ -1116,6 +1127,9 @@ class Runtime : public PointerBase,
 
   /// Set to true if we should enable ArrayBuffer, DataView and typed arrays.
   const bool hasArrayBuffer_;
+
+  /// Set to true if we are using microtasks.
+  const bool hasMicrotaskQueue_;
 
   /// Set to true if we should randomize stack placement etc.
   const bool shouldRandomizeMemoryLayout_;
@@ -1425,7 +1439,7 @@ class Runtime : public PointerBase,
   /// suggests we're not in the interpter loop, and there will be no CodeBlock
   /// to find.
   std::pair<const CodeBlock *, const inst::Inst *>
-  getCurrentInterpreterLocation(const inst::Inst *initialSearchIP) const;
+  getCurrentInterpreterLocation(const inst::Inst *initialSearchIP);
 
  public:
   /// Return a StackTraceTreeNode for the last known interpreter bytecode
@@ -1497,11 +1511,12 @@ class Runtime : public PointerBase,
 };
 
 /// An encrypted/obfuscated native pointer. The key is held by GCBase.
-template <typename T>
+template <typename T, XorPtrKeyID K>
 class XorPtr {
-  uintptr_t bits_{0};
+  uintptr_t bits_;
 
  public:
+  XorPtr() = default;
   XorPtr(Runtime &runtime, T *ptr) {
     set(runtime, ptr);
   }
@@ -1509,15 +1524,19 @@ class XorPtr {
     set(runtime.getHeap(), ptr);
   }
   void set(GC &gc, T *ptr) {
-    bits_ = reinterpret_cast<uintptr_t>(ptr) ^ gc.pointerEncryptionKey_;
+    bits_ = reinterpret_cast<uintptr_t>(ptr) ^ gc.pointerEncryptionKey_[K];
   }
-  T *get(Runtime &runtime) {
+  T *get(Runtime &runtime) const {
     return get(runtime.getHeap());
   }
-  T *get(GC &gc) {
-    return reinterpret_cast<T *>(bits_ ^ gc.pointerEncryptionKey_);
+  T *get(GC &gc) const {
+    return reinterpret_cast<T *>(bits_ ^ gc.pointerEncryptionKey_[K]);
   }
 };
+
+static_assert(
+    std::is_trivial<XorPtr<void, XorPtrKeyID::_NumKeys>>::value,
+    "XorPtr must be trivial");
 
 /// An RAII class for automatically tracking the native call frame depth.
 class ScopedNativeDepthTracker {

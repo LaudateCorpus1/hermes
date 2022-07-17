@@ -6,6 +6,7 @@
 set(source_files
   ArrayStorage.cpp
   BasicBlockExecutionInfo.cpp
+  BigIntPrimitive.cpp
   BoxedDouble.cpp
   BuildMetadata.cpp
   Callable.cpp
@@ -39,6 +40,7 @@ set(source_files
   JSNativeFunctions.cpp
   JSTypedArray.cpp
   JSWeakMapImpl.cpp
+  JSWeakRef.cpp
   LimitedStorageProvider.cpp
   DecoratedObject.cpp
   HostModel.cpp
@@ -75,6 +77,7 @@ set(source_files
   JSLib/ArrayBuffer.cpp
   JSLib/ArrayIterator.cpp
   JSLib/AsyncFunction.cpp
+  JSLib/BigInt.cpp
   JSLib/CallSite.cpp
   JSLib/DataView.cpp
   JSLib/TypedArray.cpp
@@ -110,6 +113,7 @@ set(source_files
   JSLib/Symbol.cpp
   JSLib/Date.cpp JSLib/DateUtil.cpp
   JSLib/WeakMap.cpp
+  JSLib/WeakRef.cpp
   JSLib/WeakSet.cpp
   JSLib/print.cpp
   JSLib/eval.cpp

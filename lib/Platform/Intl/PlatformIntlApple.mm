@@ -630,6 +630,124 @@ std::u16string getDefaultHourCycle(NSLocale *locale) {
   }
   return u"h24";
 }
+
+template <size_t N, size_t P = 0>
+static constexpr bool isSorted(const std::u16string_view (&v)[N]) {
+  if constexpr (P < N - 1) {
+    return v[P] < v[P + 1] && isSorted<N, P + 1>(v);
+  }
+  return true;
+}
+
+// https://402.ecma-international.org/8.0/#sec-issanctionedsimpleunitidentifier
+bool isSanctionedSimpleUnitIdentifier(std::u16string_view unitIdentifier) {
+  static constexpr std::u16string_view sanctionedIdentifiers[] = {
+      u"acre",       u"bit",        u"byte",
+      u"celsius",    u"centimeter", u"day",
+      u"degree",     u"fahrenheit", u"fluid-ounce",
+      u"foot",       u"gallon",     u"gigabit",
+      u"gigabyte",   u"gram",       u"hectare",
+      u"hour",       u"inch",       u"kilobit",
+      u"kilobyte",   u"kilogram",   u"kilometer",
+      u"liter",      u"megabit",    u"megabyte",
+      u"meter",      u"mile",       u"mile-scandinavian",
+      u"milliliter", u"millimeter", u"millisecond",
+      u"minute",     u"month",      u"ounce",
+      u"percent",    u"petabyte",   u"pound",
+      u"second",     u"stone",      u"terabit",
+      u"terabyte",   u"week",       u"yard",
+      u"year"};
+
+  static_assert(
+      isSorted(sanctionedIdentifiers), "keep sanctionedIdentifiers sorted");
+  //  1. If unitIdentifier is listed in Table 2 (sanctionedIdentifiers) above,
+  //  return true
+  //  2. Else, return false.
+  return std::binary_search(
+      std::begin(sanctionedIdentifiers),
+      std::end(sanctionedIdentifiers),
+      unitIdentifier);
+}
+
+// https://402.ecma-international.org/8.0/#sec-iswellformedunitidentifier
+bool isWellFormedUnitIdentifier(std::u16string_view unitIdentifier) {
+  //  1. If the result of IsSanctionedSimpleUnitIdentifier(unitIdentifier) is
+  //  true, then a. Return true.
+  if (isSanctionedSimpleUnitIdentifier(unitIdentifier))
+    return true;
+  //  2. If the substring "-per-" does not occur exactly once in unitIdentifier,
+  //  then a. Return false.
+  std::u16string_view fractionDelimiter = u"-per-";
+  auto foundPos = unitIdentifier.find(fractionDelimiter);
+  if (foundPos == std::u16string_view::npos)
+    return false;
+  //  3. Let numerator be the substring of unitIdentifier from the beginning to
+  //  just before "-per-".
+  //  4. If the result of IsSanctionedSimpleUnitIdentifier(numerator) is false,
+  //  then a. Return false.
+  auto numerator = unitIdentifier.substr(0, foundPos);
+  if (!isSanctionedSimpleUnitIdentifier(numerator))
+    return false;
+  //  5. Let denominator be the substring of unitIdentifier from just after
+  //  "-per-" to the end.
+  //  6. If the result of IsSanctionedSimpleUnitIdentifier(denominator) is
+  //  false, then a. Return false.
+  const size_t denominatorPos = foundPos + fractionDelimiter.size();
+  auto denominator = unitIdentifier.substr(
+      denominatorPos, unitIdentifier.length() - denominatorPos);
+  if (!isSanctionedSimpleUnitIdentifier(denominator))
+    return false;
+  //  7. Return true.
+  return true;
+}
+
+// https://402.ecma-international.org/8.0/#sec-iswellformedcurrencycode
+bool isWellFormedCurrencyCode(std::u16string_view currencyCode) {
+  //  1. Let normalized be the result of mapping currency to upper case as
+  //  described in 6.1.
+  auto normalized = toASCIIUppercase(currencyCode);
+  //  2. If the number of elements in normalized is not 3, return false.
+  if (normalized.size() != 3)
+    return false;
+  //  3. If normalized contains any character that is not in the range "A" to
+  //  "Z" (U+0041 to U+005A), return false.
+  if (!llvh::all_of(normalized, [](auto c) { return c >= u'A' && c <= u'Z'; }))
+    return false;
+  //  4. Return true.
+  return true;
+}
+
+struct CurrencyInfo {
+  std::u16string_view code;
+  uint8_t digits;
+};
+
+template <size_t N, size_t P = 0>
+static constexpr bool isSorted(const CurrencyInfo (&v)[N]) {
+  if constexpr (P < N - 1) {
+    return v[P].code < v[P + 1].code && isSorted<N, P + 1>(v);
+  }
+  return true;
+}
+
+uint8_t getCurrencyDigits(std::u16string_view code) {
+  //  https://en.wikipedia.org/wiki/ISO_4217#Active_codes
+  static constexpr CurrencyInfo currencies[] = {
+      {u"BHD", 3}, {u"BIF", 0}, {u"CLF", 4}, {u"CLP", 0}, {u"DJF", 0},
+      {u"GNF", 0}, {u"IQD", 3}, {u"ISK", 0}, {u"JOD", 3}, {u"JPY", 0},
+      {u"KMF", 0}, {u"KRW", 0}, {u"KWD", 3}, {u"LYD", 3}, {u"OMR", 3},
+      {u"PYG", 0}, {u"RWF", 0}, {u"TND", 3}, {u"UGX", 0}, {u"UYI", 0},
+      {u"UYW", 4}, {u"VND", 0}, {u"VUV", 0}, {u"XAF", 0}, {u"XOF", 0},
+      {u"XPF", 0}};
+  //  1. If the ISO 4217 currency and funds code list contains currency as an
+  //  alphabetic code, return the minor unit value corresponding to the currency
+  //  from the list; otherwise, return 2.
+  static_assert(isSorted(currencies), "keep currencies sorted by their code");
+  auto it = llvh::lower_bound(currencies, code, [](auto currency, auto toFind) {
+    return currency.code < toFind;
+  });
+  return (it != std::end(currencies) && it->code == code) ? it->digits : 2;
+}
 }
 
 /// https://402.ecma-international.org/8.0/#sec-intl.getcanonicallocales
@@ -1338,18 +1456,13 @@ vm::ExecutionStatus DateTimeFormat::initialize(
 Options DateTimeFormat::resolvedOptions() noexcept {
   Options options;
   options.emplace(u"locale", Option(impl_->locale));
-  options.emplace(u"numeric", Option(false));
   options.emplace(u"timeZone", Option(impl_->timeZone));
   if (impl_->calendar)
     options.emplace(u"calendar", Option(*impl_->calendar));
-
   if (impl_->hourCycle.has_value()) {
     options.emplace(u"hourCycle", *impl_->hourCycle);
-    if (impl_->hourCycle == u"h11" || impl_->hourCycle == u"h12") {
-      options.emplace(u"hour12", true);
-    } else {
-      options.emplace(u"hour12", false);
-    }
+    options.emplace(
+        u"hour12", impl_->hourCycle == u"h11" || impl_->hourCycle == u"h12");
   }
   if (impl_->weekday.has_value())
     options.emplace(u"weekday", *impl_->weekday);
@@ -1774,45 +1887,48 @@ struct NumberFormat::Impl {
   // [[Currency]] is a String value with the currency code identifying the
   // currency to be used if formatting with the "currency" unit type. It is only
   // used when [[Style]] has the value "currency".
-  std::u16string currency;
+  std::optional<std::u16string> currency;
   // [[CurrencyDisplay]] is one of the String values "code", "symbol",
   // "narrowSymbol", or "name", specifying whether to display the currency as an
   // ISO 4217 alphabetic currency code, a localized currency symbol, or a
   // localized currency name if formatting with the "currency" style. It is only
   // used when [[Style]] has the value "currency".
-  std::u16string currencyDisplay;
+  std::optional<std::u16string> currencyDisplay;
   // [[CurrencySign]] is one of the String values "standard" or "accounting",
   // specifying whether to render negative numbers in accounting format, often
   // signified by parenthesis. It is only used when [[Style]] has the value
   // "currency" and when [[SignDisplay]] is not "never".
-  std::u16string currencySign;
+  std::optional<std::u16string> currencySign;
   // [[Unit]] is a core unit identifier, as defined by Unicode Technical
   // Standard #35, Part 2, Section 6. It is only used when [[Style]] has the
   // value "unit".
-  std::u16string unit;
+  std::optional<std::u16string> unit;
   // [[UnitDisplay]] is one of the String values "short", "narrow", or "long",
   // specifying whether to display the unit as a symbol, narrow symbol, or
   // localized long name if formatting with the "unit" style. It is only used
   // when [[Style]] has the value "unit".
-  std::u16string unitDisplay;
+  std::optional<std::u16string> unitDisplay;
   // [[MinimumIntegerDigits]] is a non-negative integer Number value indicating
   // the minimum integer digits to be used. Numbers will be padded with leading
   // zeroes if necessary.
   uint8_t minimumIntegerDigits;
+
+  struct NumDigits {
+    uint8_t minimum;
+    uint8_t maximum;
+  };
   // [[MinimumFractionDigits]] and [[MaximumFractionDigits]] are non-negative
   // integer Number values indicating the minimum and maximum fraction digits to
   // be used. Numbers will be rounded or padded with trailing zeroes if
   // necessary. These properties are only used when [[RoundingType]] is
   // fractionDigits.
-  uint8_t minimumFractionDigits;
-  uint8_t maximumFractionDigits;
+  std::optional<NumDigits> fractionDigits;
   // [[MinimumSignificantDigits]] and [[MaximumSignificantDigits]] are positive
   // integer Number values indicating the minimum and maximum fraction digits to
   // be shown. If present, the formatter uses however many fraction digits are
   // required to display the specified number of significant digits. These
   // properties are only used when [[RoundingType]] is significantDigits.
-  uint8_t minimumSignificantDigits;
-  uint8_t maximumSignificantDigits;
+  std::optional<NumDigits> significantDigits;
   // [[UseGrouping]] is a Boolean value indicating whether a grouping separator
   // should be used.
   bool useGrouping;
@@ -1838,7 +1954,7 @@ struct NumberFormat::Impl {
   // specifying whether to display compact notation affixes in short form ("5K")
   // or long form ("5 thousand") if formatting with the "compact" notation. It
   // is only used when [[Notation]] has the value "compact".
-  std::u16string compactDisplay;
+  std::optional<std::u16string> compactDisplay;
   // [[SignDisplay]] is one of the String values "auto", "always", "never", or
   // "exceptZero", specifying whether to show the sign on negative numbers only,
   // positive and negative numbers including zero, neither positive nor negative
@@ -1875,92 +1991,6 @@ vm::CallResult<std::vector<std::u16string>> NumberFormat::supportedLocalesOf(
   auto requestedLocales = getCanonicalLocales(runtime, locales);
   // 3. Return ? (availableLocales, requestedLocales, options).
   return supportedLocales(availableLocales, requestedLocales.getValue());
-}
-
-template <size_t N, size_t P = 0>
-static constexpr bool isSorted(const std::u16string_view (&v)[N]) {
-  if constexpr (P < N - 1) {
-    return v[P] < v[P + 1] && isSorted<N, P + 1>(v);
-  }
-  return true;
-}
-
-static constexpr std::u16string_view sanctionedIdentifiers[] = {
-    u"acre",       u"bit",        u"byte",
-    u"celsius",    u"centimeter", u"day",
-    u"degree",     u"fahrenheit", u"fluid-ounce",
-    u"foot",       u"gallon",     u"gigabit",
-    u"gigabyte",   u"gram",       u"hectare",
-    u"hour",       u"inch",       u"kilobit",
-    u"kilobyte",   u"kilogram",   u"kilometer",
-    u"liter",      u"megabit",    u"megabyte",
-    u"meter",      u"mile",       u"mile-scandinavian",
-    u"milliliter", u"millimeter", u"millisecond",
-    u"minute",     u"month",      u"ounce",
-    u"percent",    u"petabyte",   u"pound",
-    u"second",     u"stone",      u"terabit",
-    u"terabyte",   u"week",       u"yard",
-    u"year"};
-
-// https://402.ecma-international.org/8.0/#sec-issanctionedsimpleunitidentifier
-bool isSanctionedSimpleUnitIdentifier(std::u16string_view unitIdentifier) {
-  static_assert(
-      isSorted(sanctionedIdentifiers), "keep sanctionedIdentifiers sorted");
-  //  1. If unitIdentifier is listed in Table 2 (sanctionedIdentifiers) above,
-  //  return true
-  //  2. Else, return false.
-  return std::binary_search(
-      std::begin(sanctionedIdentifiers),
-      std::end(sanctionedIdentifiers),
-      unitIdentifier);
-}
-
-// https://402.ecma-international.org/8.0/#sec-iswellformedunitidentifier
-bool isWellFormedUnitIdentifier(std::u16string_view unitIdentifier) {
-  //  1. If the result of IsSanctionedSimpleUnitIdentifier(unitIdentifier) is
-  //  true, then a. Return true.
-  if (isSanctionedSimpleUnitIdentifier(unitIdentifier))
-    return true;
-  //  2. If the substring "-per-" does not occur exactly once in unitIdentifier,
-  //  then a. Return false.
-  std::u16string_view fractionDelimiter = u"-per-";
-  auto foundPos = unitIdentifier.find(fractionDelimiter);
-  if (foundPos == std::u16string_view::npos)
-    return false;
-  //  3. Let numerator be the substring of unitIdentifier from the beginning to
-  //  just before "-per-".
-  //  4. If the result of IsSanctionedSimpleUnitIdentifier(numerator) is false,
-  //  then a. Return false.
-  auto numerator = unitIdentifier.substr(0, foundPos);
-  if (!isSanctionedSimpleUnitIdentifier(numerator))
-    return false;
-  //  5. Let denominator be the substring of unitIdentifier from just after
-  //  "-per-" to the end.
-  //  6. If the result of IsSanctionedSimpleUnitIdentifier(denominator) is
-  //  false, then a. Return false.
-  const size_t denominatorPos = foundPos + fractionDelimiter.size();
-  auto denominator = unitIdentifier.substr(
-      denominatorPos, unitIdentifier.length() - denominatorPos);
-  if (!isSanctionedSimpleUnitIdentifier(denominator))
-    return false;
-  //  7. Return true.
-  return true;
-}
-
-// https://402.ecma-international.org/8.0/#sec-iswellformedcurrencycode
-bool isWellFormedCurrencyCode(std::u16string_view currencyCode) {
-  //  1. Let normalized be the result of mapping currency to upper case as
-  //  described in 6.1.
-  auto normalized = toASCIIUppercase(currencyCode);
-  //  2. If the number of elements in normalized is not 3, return false.
-  if (normalized.size() != 3)
-    return false;
-  //  3. If normalized contains any character that is not in the range "A" to
-  //  "Z" (U+0041 to U+005A), return false.
-  if (!llvh::all_of(normalized, [](auto c) { return c >= u'A' && c <= u'Z'; }))
-    return false;
-  //  4. Return true.
-  return true;
 }
 
 // https://402.ecma-international.org/8.0/#sec-setnumberformatunitoptions
@@ -2046,18 +2076,19 @@ vm::ExecutionStatus NumberFormat::Impl::setNumberFormatUnitOptions(
   //  14. If style is "currency", then
   if (style == u"currency") {
     //  a. Let currency be the result of converting currency to upper case as
-    //  specified in 6.1. b. Set intlObj.[[Currency]] to currency. c. Set
-    //  intlObj.[[CurrencyDisplay]] to currencyDisplay. d. Set
-    //  intlObj.[[CurrencySign]] to currencySign.
+    //  specified in 6.1.
+    //  b. Set intlObj.[[Currency]] to currency.
     currency = toASCIIUppercase(*currencyOpt);
+    //  c. Set intlObj.[[CurrencyDisplay]] to currencyDisplay.
     currencyDisplay = *currencyDisplayOpt;
+    //  d. Set intlObj.[[CurrencySign]] to currencySign.
     currencySign = *currencySignOpt;
   }
   //  15. If style is "unit", then
   if (style == u"unit") {
     //  a. Set intlObj.[[Unit]] to unit.
     //  b. Set intlObj.[[UnitDisplay]] to unitDisplay.
-    unit = unitOpt.value_or(u"");
+    unit = *unitOpt;
     unitDisplay = *unitDisplayOpt;
   }
   return vm::ExecutionStatus::RETURNED;
@@ -2112,9 +2143,8 @@ vm::ExecutionStatus NumberFormat::Impl::setNumberFormatDigitOptions(
       return vm::ExecutionStatus::EXCEPTION;
     auto mxsdOpt = *mxsdRes;
     // d. Set intlObj.[[MinimumSignificantDigits]] to mnsd.
-    minimumSignificantDigits = *mnsdOpt;
     // e. Set intlObj.[[MaximumSignificantDigits]] to mxsd.
-    maximumSignificantDigits = *mxsdOpt;
+    significantDigits = {*mnsdOpt, *mxsdOpt};
     // 12. Else if mnfd is not undefined or mxfd is not undefined, then
   } else if (mnfdIt != options.end() || mxfdIt != options.end()) {
     // a. Set intlObj.[[RoundingType]] to fractionDigits.
@@ -2147,9 +2177,8 @@ vm::ExecutionStatus NumberFormat::Impl::setNumberFormatDigitOptions(
           "minimumFractionDigits is greater than maximumFractionDigits");
     }
     // g. Set intlObj.[[MinimumFractionDigits]] to mnfd.
-    minimumFractionDigits = *mnfdOpt;
     // h. Set intlObj.[[MaximumFractionDigits]] to mxfd.
-    maximumFractionDigits = *mxfdOpt;
+    fractionDigits = {*mnfdOpt, *mxfdOpt};
     // 13. Else if notation is "compact", then
   } else if (notation == u"compact") {
     // a. Set intlObj.[[RoundingType]] to compactRounding.
@@ -2159,45 +2188,11 @@ vm::ExecutionStatus NumberFormat::Impl::setNumberFormatDigitOptions(
     // a. Set intlObj.[[RoundingType]] to fractionDigits.
     roundingType = u"fractionDigits";
     // b. Set intlObj.[[MinimumFractionDigits]] to mnfdDefault.
-    minimumFractionDigits = mnfdDefault;
     // c. Set intlObj.[[MaximumFractionDigits]] to mxfdDefault.
-    maximumFractionDigits = mxfdDefault;
+    fractionDigits = {mnfdDefault, mxfdDefault};
   }
   return vm::ExecutionStatus::RETURNED;
 }
-
-struct CurrencyInfo {
-  std::u16string_view code;
-  uint8_t digits;
-};
-
-template <size_t N, size_t P = 0>
-static constexpr bool isSorted(const CurrencyInfo (&v)[N]) {
-  if constexpr (P < N - 1) {
-    return v[P].code < v[P + 1].code && isSorted<N, P + 1>(v);
-  }
-  return true;
-}
-
-//  https://en.wikipedia.org/wiki/ISO_4217#Active_codes
-static constexpr CurrencyInfo currencies[] = {
-    {u"BHD", 3}, {u"BIF", 0}, {u"CLF", 4}, {u"CLP", 0}, {u"DJF", 0},
-    {u"GNF", 0}, {u"IQD", 3}, {u"ISK", 0}, {u"JOD", 3}, {u"JPY", 0},
-    {u"KMF", 0}, {u"KRW", 0}, {u"KWD", 3}, {u"LYD", 3}, {u"OMR", 3},
-    {u"PYG", 0}, {u"RWF", 0}, {u"TND", 3}, {u"UGX", 0}, {u"UYI", 0},
-    {u"UYW", 4}, {u"VND", 0}, {u"VUV", 0}, {u"XAF", 0}, {u"XOF", 0},
-    {u"XPF", 0}};
-
-uint8_t getCurrencyDigits(std::u16string_view code) {
-  //  1. If the ISO 4217 currency and funds code list contains currency as an
-  //  alphabetic code, return the minor unit value corresponding to the currency
-  //  from the list; otherwise, return 2.
-  static_assert(isSorted(currencies), "keep currencies sorted by their code");
-  auto it = llvh::lower_bound(currencies, code, [](auto currency, auto toFind) {
-    return currency.code < toFind;
-  });
-  return (it != std::end(currencies) && it->code == code) ? it->digits : 2;
-};
 
 // https://402.ecma-international.org/8.0/#sec-initializenumberformat
 vm::ExecutionStatus NumberFormat::initialize(
@@ -2248,8 +2243,8 @@ vm::ExecutionStatus NumberFormat::initialize(
   // requestedLocales, opt, %NumberFormat%.[[RelevantExtensionKeys]],
   // localeData).
   static constexpr std::u16string_view relevantExtensionKeys[] = {u"nu"};
-  auto r =
-      resolveLocale(locales, *requestedLocales, opt, relevantExtensionKeys);
+  auto r = resolveLocale(
+      getAvailableLocales(), *requestedLocales, opt, relevantExtensionKeys);
   // 11. Set numberFormat.[[Locale]] to r.[[locale]].
   impl_->locale = r.locale;
   // 12. Set numberFormat.[[DataLocale]] to r.[[dataLocale]].
@@ -2266,7 +2261,7 @@ vm::ExecutionStatus NumberFormat::initialize(
   if (style == u"currency") {
     // a. Let currency be numberFormat.[[Currency]].
     // b. Let cDigits be CurrencyDigits(currency).
-    auto cDigits = getCurrencyDigits(impl_->currency);
+    auto cDigits = getCurrencyDigits(*impl_->currency);
     // c. Let mnfdDefault be cDigits.
     mnfdDefault = cDigits;
     // d. Let mxfdDefault be cDigits.
@@ -2338,26 +2333,35 @@ vm::ExecutionStatus NumberFormat::initialize(
 Options NumberFormat::resolvedOptions() noexcept {
   Options options;
   options.emplace(u"locale", impl_->locale);
-  options.emplace(u"dataLocale", impl_->dataLocale);
   options.emplace(u"style", impl_->style);
-  options.emplace(u"currency", impl_->currency);
-  options.emplace(u"currencyDisplay", impl_->currencyDisplay);
-  options.emplace(u"currencySign", impl_->currencySign);
-  options.emplace(u"unit", impl_->unit);
-  options.emplace(u"unitDisplay", impl_->unitDisplay);
+  if (impl_->currency)
+    options.emplace(u"currency", *impl_->currency);
+  if (impl_->currencyDisplay)
+    options.emplace(u"currencyDisplay", *impl_->currencyDisplay);
+  if (impl_->currencySign)
+    options.emplace(u"currencySign", *impl_->currencySign);
+  if (impl_->unit)
+    options.emplace(u"unit", *impl_->unit);
+  if (impl_->unitDisplay)
+    options.emplace(u"unitDisplay", *impl_->unitDisplay);
   options.emplace(u"minimumIntegerDigits", (double)impl_->minimumIntegerDigits);
-  options.emplace(
-      u"minimumFractionDigits", (double)impl_->minimumFractionDigits);
-  options.emplace(
-      u"maximumFractionDigits", (double)impl_->maximumFractionDigits);
-  options.emplace(
-      u"minimumSignificantDigits", (double)impl_->minimumSignificantDigits);
-  options.emplace(
-      u"maximumSignificantDigits", (double)impl_->maximumSignificantDigits);
+  if (impl_->fractionDigits) {
+    options.emplace(
+        u"minimumFractionDigits", (double)impl_->fractionDigits->minimum);
+    options.emplace(
+        u"maximumFractionDigits", (double)impl_->fractionDigits->maximum);
+  }
+  if (impl_->significantDigits) {
+    options.emplace(
+        u"minimumSignificantDigits", (double)impl_->significantDigits->minimum);
+    options.emplace(
+        u"maximumSignificantDigits", (double)impl_->significantDigits->maximum);
+  }
   options.emplace(u"useGrouping", impl_->useGrouping);
   options.emplace(u"roundingType", impl_->roundingType);
   options.emplace(u"notation", impl_->notation);
-  options.emplace(u"compactDisplay", impl_->compactDisplay);
+  if (impl_->compactDisplay)
+    options.emplace(u"compactDisplay", *impl_->compactDisplay);
   options.emplace(u"signDisplay", impl_->signDisplay);
   return options;
 }
@@ -2371,7 +2375,7 @@ std::u16string NumberFormat::Impl::format(double number) noexcept {
   // - signDisplay is not supported.
   // - NSNumberFormatter has maximumIntegerDigits, which is 42 by default
   auto nsLocale =
-      [NSLocale localeWithLocaleIdentifier:u16StringToNSString(locale)];
+      [NSLocale localeWithLocaleIdentifier:u16StringToNSString(dataLocale)];
   auto nf = [NSNumberFormatter new];
   nf.locale = nsLocale;
   if (style == u"decimal") {
@@ -2381,7 +2385,7 @@ std::u16string NumberFormat::Impl::format(double number) noexcept {
     }
   } else if (style == u"currency") {
     nf.numberStyle = NSNumberFormatterCurrencyStyle;
-    nf.currencyCode = u16StringToNSString(currency);
+    nf.currencyCode = u16StringToNSString(*currency);
     if (currencyDisplay == u"code") {
       nf.numberStyle = NSNumberFormatterCurrencyISOCodeStyle;
     } else if (currencyDisplay == u"symbol") {
@@ -2400,11 +2404,13 @@ std::u16string NumberFormat::Impl::format(double number) noexcept {
     nf.numberStyle = NSNumberFormatterNoStyle;
   }
   nf.minimumIntegerDigits = minimumIntegerDigits;
-  nf.minimumFractionDigits = minimumFractionDigits;
-  nf.maximumFractionDigits = maximumFractionDigits;
-  nf.minimumSignificantDigits = minimumSignificantDigits;
-  if (maximumSignificantDigits > 0) {
-    nf.maximumSignificantDigits = maximumSignificantDigits;
+  if (fractionDigits) {
+    nf.minimumFractionDigits = fractionDigits->minimum;
+    nf.maximumFractionDigits = fractionDigits->maximum;
+  }
+  if (significantDigits) {
+    nf.minimumSignificantDigits = significantDigits->minimum;
+    nf.maximumSignificantDigits = significantDigits->maximum;
   }
   nf.usesGroupingSeparator = useGrouping;
   if (style == u"unit") {
@@ -2418,7 +2424,7 @@ std::u16string NumberFormat::Impl::format(double number) noexcept {
     } else if (unitDisplay == u"long") {
       mf.unitStyle = NSFormattingUnitStyleLong;
     }
-    auto u = [[NSUnit alloc] initWithSymbol:u16StringToNSString(unit)];
+    auto u = [[NSUnit alloc] initWithSymbol:u16StringToNSString(*unit)];
     auto m = [[NSMeasurement alloc] initWithDoubleValue:number unit:u];
     return nsStringToU16String([mf stringFromMeasurement:m]);
   }

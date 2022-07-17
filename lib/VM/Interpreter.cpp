@@ -13,6 +13,7 @@
 #include "hermes/Support/Conversions.h"
 #include "hermes/Support/SlowAssert.h"
 #include "hermes/Support/Statistic.h"
+#include "hermes/VM/BigIntPrimitive.h"
 #include "hermes/VM/Callable.h"
 #include "hermes/VM/CodeBlock.h"
 #include "hermes/VM/HandleRootOwner-inline.h"
@@ -1196,12 +1197,25 @@ tailCall:
     DISPATCH;                                                            \
   }
 
-#define INCDECOP(name, oper)                                            \
-  CASE(name) {                                                          \
-    O1REG(name) =                                                       \
-        HermesValue::encodeDoubleValue(O2REG(name).getNumber() oper 1); \
-    ip = NEXTINST(name);                                                \
-    DISPATCH;                                                           \
+#define INCDECOP(name)                                                        \
+  CASE(name) {                                                                \
+    if (LLVM_LIKELY(O2REG(name).isNumber())) {                                \
+      O1REG(name) =                                                           \
+          HermesValue::encodeDoubleValue(do##name(O2REG(name).getNumber()));  \
+      gcScope.flushToSmallCount(KEEP_HANDLES);                                \
+      ip = NEXTINST(name);                                                    \
+      DISPATCH;                                                               \
+    }                                                                         \
+    CAPTURE_IP(                                                               \
+        res =                                                                 \
+            doIncDecOperSlowPath<do##name>(runtime, Handle<>(&O2REG(name)))); \
+    if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {                   \
+      goto exception;                                                         \
+    }                                                                         \
+    O1REG(name) = *res;                                                       \
+    gcScope.flushToSmallCount(KEEP_HANDLES);                                  \
+    ip = NEXTINST(name);                                                      \
+    DISPATCH;                                                                 \
   }
 
 /// Implement a shift instruction with a fast path where both
@@ -1592,7 +1606,7 @@ tailCall:
         runtime.pushCallStack(curCodeBlock, ip);
 #endif
 
-        CodeBlock *calleeBlock = func->getCodeBlock();
+        CodeBlock *calleeBlock = func->getCodeBlock(runtime);
         CAPTURE_IP(calleeBlock->lazyCompile(runtime));
 #if defined(HERMESVM_PROFILER_EXTERN)
         CAPTURE_IP(res = runtime.interpretFunction(calleeBlock));
@@ -1734,7 +1748,7 @@ tailCall:
             GeneratorInnerFunction::State::SuspendedStart) {
           nextIP = NEXTINST(StartGenerator);
         } else {
-          nextIP = innerFn->getNextIP();
+          nextIP = innerFn->getNextIP(runtime);
           innerFn->restoreStack(runtime);
         }
         innerFn->setState(GeneratorInnerFunction::State::Executing);
@@ -2675,6 +2689,21 @@ tailCall:
         DISPATCH;
       }
 
+      CASE(ToNumeric) {
+        if (LLVM_LIKELY(O2REG(ToNumeric).isNumber())) {
+          O1REG(ToNumeric) = O2REG(ToNumeric);
+          ip = NEXTINST(ToNumeric);
+        } else {
+          CAPTURE_IP(res = toNumeric_RJS(runtime, Handle<>(&O2REG(ToNumeric))));
+          if (res == ExecutionStatus::EXCEPTION)
+            goto exception;
+          gcScope.flushToSmallCount(KEEP_HANDLES);
+          O1REG(ToNumeric) = res.getValue();
+          ip = NEXTINST(ToNumeric);
+        }
+        DISPATCH;
+      }
+
       CASE(ToInt32) {
         CAPTURE_IP(res = toInt32_RJS(runtime, Handle<>(&O2REG(ToInt32))));
         if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION))
@@ -2759,8 +2788,8 @@ tailCall:
           ip = NEXTINST(JmpUndefinedLong);
         DISPATCH;
       }
-      INCDECOP(Inc, +)
-      INCDECOP(Dec, -)
+      INCDECOP(Inc)
+      INCDECOP(Dec)
       CASE(Add) {
         if (LLVM_LIKELY(
                 O2REG(Add).isNumber() &&
@@ -2791,13 +2820,26 @@ tailCall:
           ip = NEXTINST(BitNot);
           DISPATCH;
         }
-        CAPTURE_IP(res = toInt32_RJS(runtime, Handle<>(&O2REG(BitNot))));
+        CAPTURE_IP(res = toNumeric_RJS(runtime, Handle<>(&O2REG(BitNot))));
         if (res == ExecutionStatus::EXCEPTION) {
           goto exception;
         }
+        if (res->isBigInt()) {
+          CAPTURE_IP_ASSIGN(auto bigint, runtime.makeHandle(res->getBigInt()));
+          CAPTURE_IP(res = BigIntPrimitive::unaryNOT(runtime, bigint));
+          if (res == ExecutionStatus::EXCEPTION) {
+            goto exception;
+          }
+          O1REG(Negate) = HermesValue::encodeBigIntValue(res->getBigInt());
+        } else {
+          CAPTURE_IP(res = toInt32_RJS(runtime, Handle<>(&O2REG(BitNot))));
+          if (res == ExecutionStatus::EXCEPTION) {
+            goto exception;
+          }
+          O1REG(BitNot) = HermesValue::encodeDoubleValue(
+              ~static_cast<int32_t>(res->getNumber()));
+        }
         gcScope.flushToSmallCount(KEEP_HANDLES);
-        O1REG(BitNot) = HermesValue::encodeDoubleValue(
-            ~static_cast<int32_t>(res->getNumber()));
         ip = NEXTINST(BitNot);
         DISPATCH;
       }
@@ -3069,11 +3111,22 @@ tailCall:
           O1REG(Negate) =
               HermesValue::encodeDoubleValue(-O2REG(Negate).getNumber());
         } else {
-          CAPTURE_IP(res = toNumber_RJS(runtime, Handle<>(&O2REG(Negate))));
+          CAPTURE_IP(res = toNumeric_RJS(runtime, Handle<>(&O2REG(Negate))));
           if (res == ExecutionStatus::EXCEPTION)
             goto exception;
+          if (res->isNumber()) {
+            O1REG(Negate) = HermesValue::encodeDoubleValue(-res->getNumber());
+          } else {
+            assert(res->isBigInt() && "should be bigint");
+            CAPTURE_IP_ASSIGN(
+                auto bigint, runtime.makeHandle(res->getBigInt()));
+            CAPTURE_IP(res = BigIntPrimitive::unaryMinus(runtime, bigint));
+            if (res == ExecutionStatus::EXCEPTION) {
+              goto exception;
+            }
+            O1REG(Negate) = HermesValue::encodeBigIntValue(res->getBigInt());
+          }
           gcScope.flushToSmallCount(KEEP_HANDLES);
-          O1REG(Negate) = HermesValue::encodeDoubleValue(-res->getNumber());
         }
         ip = NEXTINST(Negate);
         DISPATCH;
@@ -3331,6 +3384,22 @@ tailCall:
       LOAD_CONST(
           LoadConstDouble,
           HermesValue::encodeDoubleValue(ip->iLoadConstDouble.op2));
+      // LoadConstBigInt will always allocate a new (heap) object (unlike, e.g.,
+      // LoadConstString). This could become an issue for code that uses lots of
+      // BigInt literals in loops, in which case the VM may need to cache the
+      // objects.
+      LOAD_CONST_CAPTURE_IP(
+          LoadConstBigInt,
+          runtime.ignoreAllocationFailure(BigIntPrimitive::fromBytes(
+              runtime,
+              curCodeBlock->getRuntimeModule()->getBigIntBytesFromBigIntId(
+                  ip->iLoadConstBigInt.op2))));
+      LOAD_CONST_CAPTURE_IP(
+          LoadConstBigIntLongIndex,
+          runtime.ignoreAllocationFailure(BigIntPrimitive::fromBytes(
+              runtime,
+              curCodeBlock->getRuntimeModule()->getBigIntBytesFromBigIntId(
+                  ip->iLoadConstBigIntLongIndex.op2))));
       LOAD_CONST_CAPTURE_IP(
           LoadConstString,
           HermesValue::encodeStringValue(

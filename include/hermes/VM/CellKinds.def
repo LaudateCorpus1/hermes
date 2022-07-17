@@ -74,6 +74,7 @@ CELL_CLASS(JSSetIterator, "Set Iterator")
 CELL_CLASS(JSMapIterator, "Map Iterator")
 CELL_CLASS(JSWeakMap, "WeakMap")
 CELL_CLASS(JSWeakSet, "WeakSet")
+CELL_CLASS(JSWeakRef, "WeakRef")
 CELL_CLASS(JSBoolean, "Boolean")
 CELL_CLASS(JSString, "String")
 CELL_CLASS(JSNumber, "Number")
@@ -87,6 +88,7 @@ CELL_CLASS(JSRegExpStringIterator, "RegExp String Iterator")
 CELL_CLASS(RequireContext, "RequireContext")
 CELL_CLASS(JSGenerator, "Generator")
 CELL_CLASS(JSProxy, "Proxy")
+CELL_CLASS(JSBigInt, "BigInt")
 
 CELL_KIND(BoundFunction)
 CELL_KIND(NativeFunction)
@@ -97,6 +99,8 @@ CELL_KIND(JSGeneratorFunction)
 CELL_KIND(GeneratorInnerFunction)
 CELL_KIND(JSAsyncFunction)
 CELL_CLASS(JSFunction, "Function")
+
+CELL_KIND(BigIntPrimitive)
 
 // Dummy object used only in tests.
 CELL_KIND(DummyObject)
@@ -112,7 +116,7 @@ CELL_RANGE(ArrayImpl, Arguments, JSArray)
 CELL_RANGE(Callable, BoundFunction, JSFunction)
 CELL_RANGE(CodeBlockFunction, JSGeneratorFunction, JSFunction)
 CELL_RANGE(NativeFunction, NativeFunction, FinalizableNativeFunction)
-CELL_RANGE(TypedArrayBase, Int8Array, Float64Array)
+CELL_RANGE(TypedArrayBase, Int8Array, BigUint64Array)
 CELL_RANGE(WeakMapImplBase, JSWeakMap, JSWeakSet)
 CELL_RANGE(
     StringPrimitive,

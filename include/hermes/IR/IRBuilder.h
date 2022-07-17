@@ -163,6 +163,9 @@ class IRBuilder {
   /// Create a new literal NaN.
   LiteralNumber *getLiteralNaN();
 
+  /// Create a new literal BitInt of value \p value.
+  LiteralBigInt *getLiteralBigInt(UniqueString *value);
+
   /// Create a new literal string of value \p value.
   LiteralString *getLiteralString(StringRef value);
 
@@ -271,6 +274,8 @@ class IRBuilder {
   AllocStackInst *createAllocStackInst(Identifier varName);
 
   AsNumberInst *createAsNumberInst(Value *val);
+
+  AsNumericInst *createAsNumericInst(Value *val);
 
   AsInt32Inst *createAsInt32Inst(Value *val);
 

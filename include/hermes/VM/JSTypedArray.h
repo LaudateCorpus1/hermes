@@ -265,18 +265,20 @@ class JSTypedArray final : public JSTypedArrayBase {
       Runtime &runtime,
       size_type length);
 
-  /// Converts a \p value to the type used by this typed array.
+  /// Converts a \p numeric to the type used by this typed array.
   /// NOTE: this function has specializations for types which don't use a
   /// truncated int32 representation. See the bottom of this file for their
   /// implementations.
-  static inline T toDestType(double number) {
-    return hermes::truncateToInt32(number);
+  static inline T toDestType(const HermesValue &numeric) {
+    return hermes::truncateToInt32(numeric.getNumber());
   }
 
  protected:
   /// Retrieve an indexed property.
-  static HermesValue
-  _getOwnIndexedImpl(JSObject *self, Runtime &runtime, uint32_t index);
+  static HermesValue _getOwnIndexedImpl(
+      PseudoHandle<JSObject> self,
+      Runtime &runtime,
+      uint32_t index);
   static CallResult<bool> _setOwnIndexedImpl(
       Handle<JSObject> selfHandle,
       Runtime &runtime,
@@ -299,27 +301,35 @@ class JSTypedArray final : public JSTypedArrayBase {
 template <>
 inline uint8_t
 JSTypedArray<uint8_t, CellKind::Uint8ClampedArrayKind>::toDestType(
-    double number) {
-  return toUInt8Clamp(number);
+    const HermesValue &numeric) {
+  return toUInt8Clamp(numeric.getNumber());
 }
 
 template <>
 inline float JSTypedArray<float, CellKind::Float32ArrayKind>::toDestType(
-    double number) LLVM_NO_SANITIZE("float-cast-overflow");
+    const HermesValue &numeric) LLVM_NO_SANITIZE("float-cast-overflow");
 
 template <>
 inline float JSTypedArray<float, CellKind::Float32ArrayKind>::toDestType(
-    double number) {
+    const HermesValue &numeric) {
   // This can overflow a float, but float overflow goes to Infinity
   // (the correct behavior) on all modern platforms.
-  return number;
+  return numeric.getNumber();
 }
 
 template <>
 inline double JSTypedArray<double, CellKind::Float64ArrayKind>::toDestType(
-    double number) {
-  return number;
+    const HermesValue &numeric) {
+  return numeric.getNumber();
 }
+
+template <>
+int64_t JSTypedArray<int64_t, CellKind::BigInt64ArrayKind>::toDestType(
+    const HermesValue &numeric);
+
+template <>
+uint64_t JSTypedArray<uint64_t, CellKind::BigUint64ArrayKind>::toDestType(
+    const HermesValue &numeric);
 
 /// @}
 #define TYPED_ARRAY(name, type) \

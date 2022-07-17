@@ -260,7 +260,7 @@ throwTypeError(void *ctx, Runtime &runtime, NativeArgs) {
 // NOTE: when declaring more global symbols, don't forget to update
 // "Libhermes.h".
 void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
-  GCScope gcScope{runtime, "initGlobalObject", 310};
+  GCScope gcScope{runtime, "initGlobalObject", 330};
 
   // Not enumerable, not writable, not configurable.
   DefinePropertyFlags constantDPF =
@@ -410,6 +410,16 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
               Handle<JSObject>::vmcast(&runtime.objectPrototype)))
           .getHermesValue();
 
+  // "Forward declaration" of BigInt.prototype. Its properties will be
+  // populated later.
+  runtime.bigintPrototype =
+      runtime
+          .ignoreAllocationFailure(JSBigInt::create(
+              runtime,
+              BigIntPrimitive::fromSignedNoThrow(runtime, 0),
+              Handle<JSObject>::vmcast(&runtime.objectPrototype)))
+          .getHermesValue();
+
   // "Forward declaration" of Number.prototype. Its properties will be
   // populated later.
   runtime.numberPrototype =
@@ -512,6 +522,12 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
   // "Forward declaration" of WeakSet.prototype.
   runtime.weakSetPrototype = JSObject::create(runtime).getHermesValue();
 
+  // Only define WeakRef if microtasks are being used.
+  if (LLVM_UNLIKELY(runtime.hasMicrotaskQueue())) {
+    // "Forward declaration" of WeakRef.prototype.
+    runtime.weakRefPrototype = JSObject::create(runtime).getHermesValue();
+  }
+
   // "Forward declaration" of %ArrayIteratorPrototype%.
   runtime.arrayIteratorPrototype =
       JSObject::create(
@@ -566,6 +582,9 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
   // String constructor.
   createStringConstructor(runtime);
 
+  // BigInt constructor.
+  createBigIntConstructor(runtime);
+
   // Function constructor.
   runtime.functionConstructor =
       createFunctionConstructor(runtime).getHermesValue();
@@ -618,6 +637,12 @@ void initGlobalObject(Runtime &runtime, const JSLibFlags &jsLibFlags) {
 
   // WeakSet constructor.
   createWeakSetConstructor(runtime);
+
+  // Only define WeakRef constructor if microtasks are being used.
+  if (LLVM_UNLIKELY(runtime.hasMicrotaskQueue())) {
+    // WeakRef constructor.
+    createWeakRefConstructor(runtime);
+  }
 
   // Symbol constructor.
   createSymbolConstructor(runtime);

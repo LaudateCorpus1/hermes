@@ -61,6 +61,14 @@ Value *ESTreeIRGen::genExpression(ESTree::Node *expr, Identifier nameHint) {
     return Builder.getLiteralNumber(Lit->_value);
   }
 
+  // Handle BigInt Literals.
+  // https://262.ecma-international.org/#sec-ecmascript-language-types-bigint-type
+  if (auto *Lit = llvh::dyn_cast<ESTree::BigIntLiteralNode>(expr)) {
+    LLVM_DEBUG(
+        dbgs() << "Loading BitInt Literal \"" << Lit->_bigint->str() << "\"\n");
+    return Builder.getLiteralBigInt(Lit->_bigint);
+  }
+
   // Handle the assignment expression.
   if (auto Assign = llvh::dyn_cast<ESTree::AssignmentExpressionNode>(expr)) {
     return genAssignmentExpr(Assign);
@@ -1460,8 +1468,10 @@ Value *ESTreeIRGen::genUpdateExpr(ESTree::UpdateExpressionNode *updateExpr) {
 
   LReference lref = createLRef(updateExpr->_argument, false);
 
-  // Load the original value.
-  Value *original = Builder.createAsNumberInst(lref.emitLoad());
+  // Load the original value. Postfix updates need to convert it toNumeric
+  // before Inc/Dec to ensure the updateExpr has the proper result value.
+  Value *original =
+      isPrefix ? lref.emitLoad() : Builder.createAsNumericInst(lref.emitLoad());
 
   // Create the inc or dec.
   Value *result = Builder.createUnaryOperatorInst(original, opKind);

@@ -298,12 +298,25 @@ class HermesRuntimeImpl final : public HermesRuntime,
     }
 
     void inc() {
+      // It is always safe to use relaxed operations for incrementing the
+      // reference count, because the only operation that may occur concurrently
+      // with it is decrementing the reference count, and we do not need to
+      // enforce any ordering between the two.
       auto oldCount = refCount.fetch_add(1, std::memory_order_relaxed);
+      assert(oldCount && "Cannot resurrect a pointer");
       assert(oldCount + 1 != 0 && "Ref count overflow");
       (void)oldCount;
     }
 
     void dec() {
+      // It is safe to use relaxed operations here because decrementing the
+      // reference count is the only access that may be performed without proper
+      // synchronisation. As a result, the only ordering we need to enforce when
+      // decrementing is that the vtable pointer used to call \c invalidate is
+      // loaded from before the decrement, in case the decrement ends up causing
+      // this value to be freed. We get this ordering from the fact that the
+      // vtable read and the reference count update form a load-store control
+      // dependency, which preserves their ordering on any reasonable hardware.
       auto oldCount = refCount.fetch_sub(1, std::memory_order_relaxed);
       assert(oldCount > 0 && "Ref count underflow");
       (void)oldCount;
@@ -620,7 +633,9 @@ class HermesRuntimeImpl final : public HermesRuntime,
       return vm::HermesValue::encodeBoolValue(value.getBool());
     } else if (value.isNumber()) {
       return vm::HermesValue::encodeUntrustedDoubleValue(value.getNumber());
-    } else if (value.isSymbol() || value.isString() || value.isObject()) {
+    } else if (
+        value.isSymbol() || value.isBigInt() || value.isString() ||
+        value.isObject()) {
       return phv(value);
     } else {
       llvm_unreachable("unknown value kind");
@@ -637,7 +652,9 @@ class HermesRuntimeImpl final : public HermesRuntime,
     } else if (value.isNumber()) {
       return runtime_.makeHandle(
           vm::HermesValue::encodeUntrustedDoubleValue(value.getNumber()));
-    } else if (value.isSymbol() || value.isString() || value.isObject()) {
+    } else if (
+        value.isSymbol() || value.isBigInt() || value.isString() ||
+        value.isObject()) {
       return vm::Handle<vm::HermesValue>(&phv(value));
     } else {
       llvm_unreachable("unknown value kind");
@@ -655,6 +672,8 @@ class HermesRuntimeImpl final : public HermesRuntime,
       return hv.getDouble();
     } else if (hv.isSymbol()) {
       return add<jsi::Symbol>(hv);
+    } else if (hv.isBigInt()) {
+      return add<jsi::BigInt>(hv);
     } else if (hv.isString()) {
       return add<jsi::String>(hv);
     } else if (hv.isObject()) {
@@ -688,6 +707,7 @@ class HermesRuntimeImpl final : public HermesRuntime,
   jsi::Instrumentation &instrumentation() override;
 
   PointerValue *cloneSymbol(const Runtime::PointerValue *pv) override;
+  PointerValue *cloneBigInt(const Runtime::PointerValue *pv) override;
   PointerValue *cloneString(const Runtime::PointerValue *pv) override;
   PointerValue *cloneObject(const Runtime::PointerValue *pv) override;
   PointerValue *clonePropNameID(const Runtime::PointerValue *pv) override;
@@ -760,6 +780,7 @@ class HermesRuntimeImpl final : public HermesRuntime,
       size_t count) override;
 
   bool strictEquals(const jsi::Symbol &a, const jsi::Symbol &b) const override;
+  bool strictEquals(const jsi::BigInt &a, const jsi::BigInt &b) const override;
   bool strictEquals(const jsi::String &a, const jsi::String &b) const override;
   bool strictEquals(const jsi::Object &a, const jsi::Object &b) const override;
 
@@ -960,6 +981,21 @@ class HermesRuntimeImpl final : public HermesRuntime,
     iterator erase(iterator it) {
       return values_.erase(it);
     }
+    iterator eraseIfExpired(iterator it) {
+      auto next = std::next(it);
+      if (it->get() == 0) {
+        // TSAN will complain here because the value is being freed without any
+        // explicit synchronisation with a background thread that may have just
+        // updated the reference count (and read the vtable in the process).
+        // However, this can be safely ignored because the check above creates a
+        // load-store control dependency, and the free below therefore cannot be
+        // reordered before the check on the reference count.
+        TsanIgnoreWritesBegin();
+        values_.erase(it);
+        TsanIgnoreWritesEnd();
+      }
+      return next;
+    }
 
     size_t size() const {
       return values_.size();
@@ -989,7 +1025,8 @@ class HermesRuntimeImpl final : public HermesRuntime,
 
    private:
     void collect() {
-      values_.remove_if([](const T &t) { return t.get() == 0; });
+      for (auto it = values_.begin(), e = values_.end(); it != e;)
+        it = eraseIfExpired(it);
       targetSize_ = size() / occupancyRatio_;
     }
 
@@ -1474,11 +1511,12 @@ jsi::Value HermesRuntimeImpl::evaluateJavaScript(
 }
 
 bool HermesRuntimeImpl::drainMicrotasks(int maxMicrotasksHint) {
-  if (runtime_.useJobQueue()) {
+  if (runtime_.hasMicrotaskQueue()) {
     checkStatus(runtime_.drainJobs());
   }
   // \c drainJobs is currently an unbounded execution, hence no exceptions
   // implies drained until TODO(T89426441): \c maxMicrotasksHint is supported
+  runtime_.clearKeptObjects();
   return true;
 }
 
@@ -1508,6 +1546,11 @@ jsi::Instrumentation &HermesRuntimeImpl::instrumentation() {
 }
 
 jsi::Runtime::PointerValue *HermesRuntimeImpl::cloneSymbol(
+    const Runtime::PointerValue *pv) {
+  return clone(pv);
+}
+
+jsi::Runtime::PointerValue *HermesRuntimeImpl::cloneBigInt(
     const Runtime::PointerValue *pv) {
   return clone(pv);
 }
@@ -2062,6 +2105,14 @@ bool HermesRuntimeImpl::strictEquals(const jsi::Symbol &a, const jsi::Symbol &b)
   return phv(a).getSymbol() == phv(b).getSymbol();
 }
 
+bool HermesRuntimeImpl::strictEquals(const jsi::BigInt &a, const jsi::BigInt &b)
+    const {
+  throw jsi::JSError(
+      *const_cast<HermesRuntimeImpl *>(this),
+      "unimplemented: "
+      "HermesRuntime::strictEquals(const BigInt &, const BigInt &)");
+}
+
 bool HermesRuntimeImpl::strictEquals(const jsi::String &a, const jsi::String &b)
     const {
   return phv(a).getString()->equals(phv(b).getString());
@@ -2108,11 +2159,7 @@ void HermesRuntimeImpl::popScope(ScopeState *prv) {
       std::terminate();
     }
 
-    if (value.get() == 0) {
-      it = hermesValues_.erase(it);
-    } else {
-      ++it;
-    }
+    it = hermesValues_.eraseIfExpired(it);
   }
 
   // We did not find a sentinel value.

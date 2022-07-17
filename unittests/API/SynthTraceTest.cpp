@@ -6,6 +6,7 @@
  */
 
 #include <hermes/SynthTrace.h>
+#include "llvh/ADT/ArrayRef.h"
 
 #include <hermes/TraceInterpreter.h>
 #include <hermes/TracingRuntime.h>
@@ -78,7 +79,7 @@ TEST_F(SynthTraceTest, CreateObject) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(1, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, objID), *records.at(0));
+      SynthTrace::CreateObjectRecord(dummyTime, objID), *records[0]);
 }
 
 TEST_F(SynthTraceTest, CallAndReturn) {
@@ -116,18 +117,18 @@ TEST_F(SynthTraceTest, CallAndReturn) {
       identityStr,
 #endif
       SynthTrace::encodeObject(functionID));
-  EXPECT_EQ_RECORD(gprExpect, *records.at(4));
+  EXPECT_EQ_RECORD(gprExpect, *records[4]);
   EXPECT_EQ_RECORD(
       SynthTrace::CallFromNativeRecord(
           dummyTime,
           functionID,
           SynthTrace::encodeUndefined(),
           {SynthTrace::encodeString(argID)}),
-      *records.at(5));
+      *records[5]);
   EXPECT_EQ_RECORD(
       SynthTrace::ReturnToNativeRecord(
           dummyTime, SynthTrace::encodeString(argID)),
-      *records.at(6));
+      *records[6]);
 }
 
 TEST_F(SynthTraceTest, CallToNative) {
@@ -160,7 +161,7 @@ TEST_F(SynthTraceTest, CallToNative) {
   // trampolines through the VM.
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(dummyTime, propNameID, "foo", 3),
-      *records.at(0));
+      *records[0]);
   auto chfrExpect = SynthTrace::CreateHostFunctionRecord(
       dummyTime,
       functionID,
@@ -169,31 +170,31 @@ TEST_F(SynthTraceTest, CallToNative) {
       "foo",
 #endif
       1);
-  EXPECT_EQ_RECORD(chfrExpect, *records.at(1));
+  EXPECT_EQ_RECORD(chfrExpect, *records[1]);
   EXPECT_EQ_RECORD(
       SynthTrace::CallFromNativeRecord(
           dummyTime,
           functionID,
           SynthTrace::encodeUndefined(),
           {SynthTrace::encodeNumber(arg)}),
-      *records.at(2));
+      *records[2]);
   EXPECT_EQ_RECORD(
       SynthTrace::CallToNativeRecord(
           dummyTime,
           functionID,
           SynthTrace::encodeUndefined(),
           {SynthTrace::encodeNumber(arg)}),
-      *records.at(3));
+      *records[3]);
   // Return once from the call from JS to native, and then again for the call
   // into JS.
   EXPECT_EQ_RECORD(
       SynthTrace::ReturnFromNativeRecord(
           dummyTime, SynthTrace::encodeNumber(arg + 100)),
-      *records.at(4));
+      *records[4]);
   EXPECT_EQ_RECORD(
       SynthTrace::ReturnToNativeRecord(
           dummyTime, SynthTrace::encodeNumber(arg + 100)),
-      *records.at(5));
+      *records[5]);
 }
 
 TEST_F(SynthTraceTest, GetProperty) {
@@ -228,10 +229,10 @@ TEST_F(SynthTraceTest, GetProperty) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(7, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, objID), *records.at(0));
+      SynthTrace::CreateObjectRecord(dummyTime, objID), *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreateStringRecord(dummyTime, aStringID, a.c_str(), 1),
-      *records.at(1));
+      *records[1]);
   auto gprExpect0 = SynthTrace::GetPropertyRecord(
       dummyTime,
       objID,
@@ -240,11 +241,11 @@ TEST_F(SynthTraceTest, GetProperty) {
       a,
 #endif
       SynthTrace::encodeUndefined());
-  EXPECT_EQ_RECORD(gprExpect0, *records.at(2));
+  EXPECT_EQ_RECORD(gprExpect0, *records[2]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime, aPropID, SynthTrace::encodeString(aStringID)),
-      *records.at(3));
+      *records[3]);
   auto gprExpect1 = SynthTrace::GetPropertyRecord(
       dummyTime,
       objID,
@@ -253,10 +254,10 @@ TEST_F(SynthTraceTest, GetProperty) {
       a,
 #endif
       SynthTrace::encodeUndefined());
-  EXPECT_EQ_RECORD(gprExpect1, *records.at(4));
+  EXPECT_EQ_RECORD(gprExpect1, *records[4]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(dummyTime, bPropID, b.c_str(), 1),
-      *records.at(5));
+      *records[5]);
   auto gprExpect2 = SynthTrace::GetPropertyRecord(
       dummyTime,
       objID,
@@ -265,7 +266,7 @@ TEST_F(SynthTraceTest, GetProperty) {
       b,
 #endif
       SynthTrace::encodeUndefined());
-  EXPECT_EQ_RECORD(gprExpect2, *records.at(6));
+  EXPECT_EQ_RECORD(gprExpect2, *records[6]);
 }
 
 TEST_F(SynthTraceTest, SetProperty) {
@@ -289,10 +290,10 @@ TEST_F(SynthTraceTest, SetProperty) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(5, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, objID), *records.at(0));
+      SynthTrace::CreateObjectRecord(dummyTime, objID), *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreateStringRecord(dummyTime, aStringID, a.c_str(), 1),
-      *records.at(1));
+      *records[1]);
   auto sprExpect0 = SynthTrace::SetPropertyRecord(
       dummyTime,
       objID,
@@ -301,10 +302,10 @@ TEST_F(SynthTraceTest, SetProperty) {
       a,
 #endif
       SynthTrace::encodeNumber(1));
-  EXPECT_EQ_RECORD(sprExpect0, *records.at(2));
+  EXPECT_EQ_RECORD(sprExpect0, *records[2]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(dummyTime, bPropID, b.c_str(), 1),
-      *records.at(3));
+      *records[3]);
   auto sprExpect1 = SynthTrace::SetPropertyRecord(
       dummyTime,
       objID,
@@ -313,7 +314,7 @@ TEST_F(SynthTraceTest, SetProperty) {
       b,
 #endif
       SynthTrace::encodeBool(true));
-  EXPECT_EQ_RECORD(sprExpect1, *records.at(4));
+  EXPECT_EQ_RECORD(sprExpect1, *records[4]);
 }
 
 TEST_F(SynthTraceTest, HasProperty) {
@@ -341,10 +342,10 @@ TEST_F(SynthTraceTest, HasProperty) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(5, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, objID), *records.at(0));
+      SynthTrace::CreateObjectRecord(dummyTime, objID), *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreateStringRecord(dummyTime, aStringID, a.c_str(), 1),
-      *records.at(1));
+      *records[1]);
   auto hprExpect0 = SynthTrace::HasPropertyRecord(
       dummyTime,
       objID,
@@ -354,10 +355,10 @@ TEST_F(SynthTraceTest, HasProperty) {
       a
 #endif
   );
-  EXPECT_EQ_RECORD(hprExpect0, *records.at(2));
+  EXPECT_EQ_RECORD(hprExpect0, *records[2]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(dummyTime, bPropID, b.c_str(), 1),
-      *records.at(3));
+      *records[3]);
   auto hprExpect1 = SynthTrace::HasPropertyRecord(
       dummyTime,
       objID,
@@ -367,7 +368,7 @@ TEST_F(SynthTraceTest, HasProperty) {
       b
 #endif
   );
-  EXPECT_EQ_RECORD(hprExpect1, *records.at(4));
+  EXPECT_EQ_RECORD(hprExpect1, *records[4]);
 }
 
 TEST_F(SynthTraceTest, GetPropertyNames) {
@@ -382,10 +383,10 @@ TEST_F(SynthTraceTest, GetPropertyNames) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(2, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, objID), *records.at(0));
+      SynthTrace::CreateObjectRecord(dummyTime, objID), *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::GetPropertyNamesRecord(dummyTime, objID, propNamesID),
-      *records.at(1));
+      *records[1]);
 }
 
 TEST_F(SynthTraceTest, CreateArray) {
@@ -397,7 +398,7 @@ TEST_F(SynthTraceTest, CreateArray) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(1, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateArrayRecord(dummyTime, objID, 10), *records.at(0));
+      SynthTrace::CreateArrayRecord(dummyTime, objID, 10), *records[0]);
 }
 
 TEST_F(SynthTraceTest, ArrayWrite) {
@@ -410,11 +411,11 @@ TEST_F(SynthTraceTest, ArrayWrite) {
   const auto &records = rt->trace().records();
   EXPECT_EQ(2, records.size());
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateArrayRecord(dummyTime, objID, 10), *records.at(0));
+      SynthTrace::CreateArrayRecord(dummyTime, objID, 10), *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::ArrayWriteRecord(
           dummyTime, objID, 0, SynthTrace::encodeNumber(1)),
-      *records.at(1));
+      *records[1]);
 }
 
 TEST_F(SynthTraceTest, CallObjectGetProp) {
@@ -455,14 +456,14 @@ TEST_F(SynthTraceTest, CallObjectGetProp) {
   EXPECT_EQ(9, records.size());
   EXPECT_EQ_RECORD(
       SynthTrace::CreateStringRecord(dummyTime, aStringID, a.c_str(), 1),
-      *records.at(0));
+      *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime,
           propNameID,
           getObjectPropStr.c_str(),
           getObjectPropStr.size()),
-      *records.at(1));
+      *records[1]);
   // The function was called with one argument, the object.
   auto chfrExpect = SynthTrace::CreateHostFunctionRecord(
       dummyTime,
@@ -472,16 +473,16 @@ TEST_F(SynthTraceTest, CallObjectGetProp) {
       "getObjectProp",
 #endif
       1);
-  EXPECT_EQ_RECORD(chfrExpect, *records.at(2));
+  EXPECT_EQ_RECORD(chfrExpect, *records[2]);
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, objID), *records.at(3));
+      SynthTrace::CreateObjectRecord(dummyTime, objID), *records[3]);
   EXPECT_EQ_RECORD(
       SynthTrace::CallFromNativeRecord(
           dummyTime,
           functionID,
           SynthTrace::encodeUndefined(),
           {SynthTrace::encodeObject(objID)}),
-      *records.at(4));
+      *records[4]);
   // The function (which is called from JS into native) reads one property of
   // the passed in object.
   EXPECT_EQ_RECORD(
@@ -490,7 +491,7 @@ TEST_F(SynthTraceTest, CallObjectGetProp) {
           functionID,
           SynthTrace::encodeUndefined(),
           {SynthTrace::encodeObject(objID)}),
-      *records.at(5));
+      *records[5]);
   auto gprExpect = SynthTrace::GetPropertyRecord(
       dummyTime,
       objID,
@@ -499,16 +500,16 @@ TEST_F(SynthTraceTest, CallObjectGetProp) {
       a,
 #endif
       SynthTrace::encodeUndefined());
-  EXPECT_EQ_RECORD(gprExpect, *records.at(6));
+  EXPECT_EQ_RECORD(gprExpect, *records[6]);
   // The function returned a number (it also trampolined through JS and back so
   // there's two returns).
   EXPECT_EQ_RECORD(
       SynthTrace::ReturnFromNativeRecord(
           dummyTime, SynthTrace::encodeNumber(1)),
-      *records.at(7));
+      *records[7]);
   EXPECT_EQ_RECORD(
       SynthTrace::ReturnToNativeRecord(dummyTime, SynthTrace::encodeNumber(1)),
-      *records.at(8));
+      *records[8]);
 }
 
 TEST_F(SynthTraceTest, DrainMicrotasks) {
@@ -518,10 +519,9 @@ TEST_F(SynthTraceTest, DrainMicrotasks) {
   }
   const auto &records = rt->trace().records();
   EXPECT_EQ(2, records.size());
+  EXPECT_EQ_RECORD(SynthTrace::DrainMicrotasksRecord(dummyTime), *records[0]);
   EXPECT_EQ_RECORD(
-      SynthTrace::DrainMicrotasksRecord(dummyTime), *records.at(0));
-  EXPECT_EQ_RECORD(
-      SynthTrace::DrainMicrotasksRecord(dummyTime, 5), *records.at(1));
+      SynthTrace::DrainMicrotasksRecord(dummyTime, 5), *records[1]);
 }
 
 TEST_F(SynthTraceTest, HostObjectProxy) {
@@ -614,36 +614,36 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime, xPropNameID, cs.x.c_str(), cs.x.size()),
-      *records.at(0));
+      *records[0]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime,
           getHappenedPropNameID,
           cs.getHappened.c_str(),
           cs.getHappened.size()),
-      *records.at(1));
+      *records[1]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime,
           setHappenedPropNameID,
           cs.setHappened.c_str(),
           cs.setHappened.size()),
-      *records.at(2));
+      *records[2]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime,
           getPropertyNamesHappenedPropNameID,
           cs.getPropertyNamesHappened.c_str(),
           cs.getPropertyNamesHappened.size()),
-      *records.at(3));
+      *records[3]);
 
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateHostObjectRecord(dummyTime, objID), *records.at(4));
+      SynthTrace::CreateHostObjectRecord(dummyTime, objID), *records[4]);
   // Called getProperty on the proxy. This first calls getProperty on the proxy,
   // then on the host object itself.
   EXPECT_EQ_RECORD(
       SynthTrace::GetPropertyNativeRecord(dummyTime, objID, xPropNameID, cs.x),
-      *records.at(5));
+      *records[5]);
   auto sprExpect0 = SynthTrace::SetPropertyRecord(
       dummyTime,
       globID,
@@ -652,11 +652,11 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
       cs.getHappened,
 #endif
       SynthTrace::encodeBool(true));
-  EXPECT_EQ_RECORD(sprExpect0, *records.at(6));
+  EXPECT_EQ_RECORD(sprExpect0, *records[6]);
   EXPECT_EQ_RECORD(
       SynthTrace::GetPropertyNativeReturnRecord(
           dummyTime, SynthTrace::encodeNumber(0)),
-      *records.at(7));
+      *records[7]);
   auto gprExpect0 = SynthTrace::GetPropertyRecord(
       dummyTime,
       objID,
@@ -665,7 +665,7 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
       cs.x,
 #endif
       SynthTrace::encodeNumber(0));
-  EXPECT_EQ_RECORD(gprExpect0, *records.at(8));
+  EXPECT_EQ_RECORD(gprExpect0, *records[8]);
   // Called setProperty on the proxy.
   auto sprExpect1 = SynthTrace::SetPropertyRecord(
       dummyTime,
@@ -675,7 +675,7 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
       cs.x,
 #endif
       SynthTrace::encodeNumber(insertValue));
-  EXPECT_EQ_RECORD(sprExpect1, *records.at(9));
+  EXPECT_EQ_RECORD(sprExpect1, *records[9]);
   EXPECT_EQ_RECORD(
       SynthTrace::SetPropertyNativeRecord(
           dummyTime,
@@ -683,7 +683,7 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
           xPropNameID,
           cs.x,
           SynthTrace::encodeNumber(insertValue)),
-      *records.at(10));
+      *records[10]);
   auto sprExpect2 = SynthTrace::SetPropertyRecord(
       dummyTime,
       globID,
@@ -692,13 +692,13 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
       cs.setHappened,
 #endif
       SynthTrace::encodeBool(true));
-  EXPECT_EQ_RECORD(sprExpect2, *records.at(11));
+  EXPECT_EQ_RECORD(sprExpect2, *records[11]);
   EXPECT_EQ_RECORD(
-      SynthTrace::SetPropertyNativeReturnRecord(dummyTime), *records.at(12));
+      SynthTrace::SetPropertyNativeReturnRecord(dummyTime), *records[12]);
   // Called getProperty one last time.
   EXPECT_EQ_RECORD(
       SynthTrace::GetPropertyNativeRecord(dummyTime, objID, xPropNameID, cs.x),
-      *records.at(13));
+      *records[13]);
   auto sprExpect4 = SynthTrace::SetPropertyRecord(
       dummyTime,
       globID,
@@ -707,11 +707,11 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
       cs.getHappened,
 #endif
       SynthTrace::encodeBool(true));
-  EXPECT_EQ_RECORD(sprExpect4, *records.at(14));
+  EXPECT_EQ_RECORD(sprExpect4, *records[14]);
   EXPECT_EQ_RECORD(
       SynthTrace::GetPropertyNativeReturnRecord(
           dummyTime, SynthTrace::encodeNumber(insertValue)),
-      *records.at(15));
+      *records[15]);
   auto gprExpect1 = SynthTrace::GetPropertyRecord(
       dummyTime,
       objID,
@@ -720,7 +720,7 @@ TEST_F(SynthTraceTest, HostObjectProxy) {
       cs.x,
 #endif
       SynthTrace::encodeNumber(insertValue));
-  EXPECT_EQ_RECORD(gprExpect1, *records.at(16));
+  EXPECT_EQ_RECORD(gprExpect1, *records[16]);
 }
 
 TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
@@ -809,9 +809,9 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime, oPropNameID, cs.o.c_str(), cs.o.size()),
-      *records.at(0));
+      *records[0]);
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateObjectRecord(dummyTime, oObjID), *records.at(1));
+      SynthTrace::CreateObjectRecord(dummyTime, oObjID), *records[1]);
   auto sprExpect0 = SynthTrace::SetPropertyRecord(
       dummyTime,
       globID,
@@ -820,13 +820,13 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       cs.o,
 #endif
       SynthTrace::encodeObject(oObjID));
-  EXPECT_EQ_RECORD(sprExpect0, *records.at(2));
+  EXPECT_EQ_RECORD(sprExpect0, *records[2]);
   EXPECT_EQ_RECORD(
-      SynthTrace::CreateHostObjectRecord(dummyTime, hoObjID), *records.at(3));
+      SynthTrace::CreateHostObjectRecord(dummyTime, hoObjID), *records[3]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime, hoPropNameID, ho.c_str(), ho.size()),
-      *records.at(4));
+      *records[4]);
   auto sprExpect1 = SynthTrace::SetPropertyRecord(
       dummyTime,
       globID,
@@ -835,17 +835,16 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       ho,
 #endif
       SynthTrace::encodeObject(hoObjID));
-  EXPECT_EQ_RECORD(sprExpect1, *records.at(5));
+  EXPECT_EQ_RECORD(sprExpect1, *records[5]);
   EXPECT_EQ_RECORD(
       SynthTrace::BeginExecJSRecord(dummyTime, "", codeHash, false),
-      *records.at(6));
+      *records[6]);
   // Called getProperty on the host object.
   // We can't create the expected record, since we don't know the unique ID for
   // the PropNameID for "x".  So test the fields individually.
-  EXPECT_EQ(
-      SynthTrace::RecordType::GetPropertyNative, records.at(7)->getType());
+  EXPECT_EQ(SynthTrace::RecordType::GetPropertyNative, records[7]->getType());
   auto rec7AsGPN =
-      dynamic_cast<const SynthTrace::GetPropertyNativeRecord &>(*records.at(7));
+      dynamic_cast<const SynthTrace::GetPropertyNativeRecord &>(*records[7]);
   EXPECT_EQ(hoObjID, rec7AsGPN.hostObjectID_);
   uint32_t observedXPropNameUID = rec7AsGPN.propNameID_;
   EXPECT_EQ(x, rec7AsGPN.propName_);
@@ -858,7 +857,7 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       cs.o,
 #endif
       SynthTrace::encodeObject(oObjID));
-  EXPECT_EQ_RECORD(gprExpect0, *records.at(8));
+  EXPECT_EQ_RECORD(gprExpect0, *records[8]);
   auto gprExpect1 = SynthTrace::GetPropertyRecord(
       dummyTime,
       oObjID,
@@ -867,18 +866,17 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       x,
 #endif
       SynthTrace::encodeNumber(7));
-  EXPECT_EQ_RECORD(gprExpect1, *records.at(9));
+  EXPECT_EQ_RECORD(gprExpect1, *records[9]);
   EXPECT_EQ_RECORD(
       SynthTrace::GetPropertyNativeReturnRecord(
           dummyTime, SynthTrace::encodeNumber(7)),
-      *records.at(10));
+      *records[10]);
   // Called setProperty on the host object.
   // We can't create the expected record, since we don't know the unique ID for
   // the PropNameID for "y".  So test the fields individually.
-  EXPECT_EQ(
-      SynthTrace::RecordType::SetPropertyNative, records.at(11)->getType());
-  auto rec11AsGPN = dynamic_cast<const SynthTrace::SetPropertyNativeRecord &>(
-      *records.at(11));
+  EXPECT_EQ(SynthTrace::RecordType::SetPropertyNative, records[11]->getType());
+  auto rec11AsGPN =
+      dynamic_cast<const SynthTrace::SetPropertyNativeRecord &>(*records[11]);
   EXPECT_EQ(hoObjID, rec11AsGPN.hostObjectID_);
   uint32_t observedYPropNameUID = rec11AsGPN.propNameID_;
   EXPECT_EQ(y, rec11AsGPN.propName_);
@@ -891,7 +889,7 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       cs.o,
 #endif
       SynthTrace::encodeObject(oObjID));
-  EXPECT_EQ_RECORD(gprExpect2, *records.at(12));
+  EXPECT_EQ_RECORD(gprExpect2, *records[12]);
   auto sprExpect = SynthTrace::SetPropertyRecord(
       dummyTime,
       oObjID,
@@ -900,20 +898,20 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       y,
 #endif
       SynthTrace::encodeBool(false));
-  EXPECT_EQ_RECORD(sprExpect, *records.at(13));
+  EXPECT_EQ_RECORD(sprExpect, *records[13]);
   EXPECT_EQ_RECORD(
-      SynthTrace::SetPropertyNativeReturnRecord(dummyTime), *records.at(14));
+      SynthTrace::SetPropertyNativeReturnRecord(dummyTime), *records[14]);
   EXPECT_EQ_RECORD(
       SynthTrace::EndExecJSRecord(dummyTime, SynthTrace::encodeUndefined()),
-      *records.at(15));
+      *records[15]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime, xResPropNameID, xRes.c_str(), xRes.size()),
-      *records.at(16));
+      *records[16]);
   EXPECT_EQ_RECORD(
       SynthTrace::CreatePropNameIDRecord(
           dummyTime, yResPropNameID, yRes.c_str(), yRes.size()),
-      *records.at(17));
+      *records[17]);
   auto gprExpect3 = SynthTrace::GetPropertyRecord(
       dummyTime,
       globID,
@@ -922,7 +920,7 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       xRes,
 #endif
       SynthTrace::encodeNumber(7));
-  EXPECT_EQ_RECORD(gprExpect3, *records.at(18));
+  EXPECT_EQ_RECORD(gprExpect3, *records[18]);
   auto gprExpect4 = SynthTrace::GetPropertyRecord(
       dummyTime,
       globID,
@@ -931,7 +929,7 @@ TEST_F(SynthTraceTest, HostObjectPropertyNamesAreDefs) {
       yRes,
 #endif
       SynthTrace::encodeBool(false));
-  EXPECT_EQ_RECORD(gprExpect4, *records.at(19));
+  EXPECT_EQ_RECORD(gprExpect4, *records[19]);
 }
 
 // These tests fail on Windows.
@@ -999,7 +997,7 @@ struct SynthTraceReplayTest : public ::testing::Test {
             config,
             /* traceStream */
             std::make_unique<llvh::raw_string_ostream>(traceResult),
-            /* forReplay */ true)) {}
+            /* forReplay */ false)) {}
 
   SynthTraceReplayTest()
       : SynthTraceReplayTest(::hermes::vm::RuntimeConfig::Builder()
@@ -1070,12 +1068,11 @@ TEST_F(SynthTraceReplayTest, SetPropertyReplay) {
 
 struct JobQueueReplayTest : public SynthTraceReplayTest {
   JobQueueReplayTest()
-      : SynthTraceReplayTest(
-            ::hermes::vm::RuntimeConfig::Builder()
-                .withTraceEnabled(true)
-                .withEnableHermesInternal(true)
-                .withVMExperimentFlags(::hermes::vm::experiments::JobQueue)
-                .build()) {}
+      : SynthTraceReplayTest(::hermes::vm::RuntimeConfig::Builder()
+                                 .withTraceEnabled(true)
+                                 .withEnableHermesInternal(true)
+                                 .withMicrotaskQueue(true)
+                                 .build()) {}
 };
 
 TEST_F(JobQueueReplayTest, DrainSingleMicrotask) {
@@ -1110,6 +1107,102 @@ HermesInternal.enqueueJob(inc);
     auto &rt = *replayRt;
     EXPECT_EQ(eval(rt, "x").asNumber(), 3);
   }
+}
+
+struct NonDeterminismReplayTest : public SynthTraceReplayTest {
+  NonDeterminismReplayTest()
+      : SynthTraceReplayTest(::hermes::vm::RuntimeConfig::Builder()
+                                 .withTraceEnabled(true)
+                                 .withEnableHermesInternal(true)
+                                 .withMicrotaskQueue(true)
+                                 .build()) {}
+};
+
+TEST_F(NonDeterminismReplayTest, DateNowTest) {
+  eval(*traceRt, "var x = Date.now();");
+  auto dateTime = eval(*traceRt, "x").asNumber();
+
+  replay();
+
+  auto replayedTime = eval(*replayRt, "x").asNumber();
+  EXPECT_EQ(dateTime, replayedTime);
+}
+
+TEST_F(NonDeterminismReplayTest, DateFuncTest) {
+  eval(*traceRt, "var x = Date();");
+  auto dateTime = eval(*traceRt, "x").asString(*traceRt).utf8(*traceRt);
+
+  replay();
+
+  auto replayedTime = eval(*replayRt, "x").asString(*replayRt).utf8(*replayRt);
+  EXPECT_EQ(dateTime, replayedTime);
+}
+
+TEST_F(NonDeterminismReplayTest, DateNewTest) {
+  eval(*traceRt, "var x = new Date();");
+  auto dateTime = eval(*traceRt, "x.getTime()").asNumber();
+
+  replay();
+
+  auto replayedTime = eval(*replayRt, "x.getTime()").asNumber();
+  EXPECT_EQ(dateTime, replayedTime);
+}
+
+TEST_F(NonDeterminismReplayTest, DateNewWithArgsTest) {
+  eval(*traceRt, "var x = new Date(1, 2, 3, 4, 5, 6, 7).getTime();");
+  auto dateTime = eval(*traceRt, "x").asNumber();
+
+  replay();
+
+  auto replayedTime = eval(*replayRt, "x").asNumber();
+  EXPECT_EQ(dateTime, replayedTime);
+}
+
+TEST_F(NonDeterminismReplayTest, MathRandomTest) {
+  eval(*traceRt, "var x = Math.random();");
+  auto randVal = eval(*traceRt, "x").asNumber();
+
+  replay();
+
+  auto replayedVal = eval(*replayRt, "x").asNumber();
+  EXPECT_EQ(randVal, replayedVal);
+}
+
+TEST_F(NonDeterminismReplayTest, SimpleWeakRefTest) {
+  eval(*traceRt, R"(
+var obj = {x: 5};
+var ref = new WeakRef(obj);
+var x = ref.deref().x;
+)");
+
+  auto traceX = eval(*traceRt, "x").asNumber();
+
+  replay();
+
+  auto replayX = eval(*replayRt, "x").asNumber();
+  EXPECT_EQ(traceX, replayX);
+}
+
+TEST_F(NonDeterminismReplayTest, WeakRefTest) {
+  eval(*traceRt, R"(
+var obj = {x: 5};
+var ref = new WeakRef(obj);
+obj = null;
+var firstDeref = ref.deref();
+)");
+  traceRt->drainMicrotasks();
+  eval(*traceRt, R"(
+gc();
+var secondDeref = ref.deref();
+)");
+  auto secondDeref = eval(*traceRt, "secondDeref").isUndefined();
+
+  replay();
+
+  auto replayedFirst = eval(*replayRt, "firstDeref.x").asNumber();
+  auto replayedSecond = eval(*replayRt, "secondDeref").isUndefined();
+  EXPECT_EQ(replayedFirst, 5);
+  EXPECT_EQ(secondDeref, replayedSecond);
 }
 
 /// @}

@@ -28,6 +28,7 @@ struct IsGCObject : public std::false_type {};
   struct IsGCObject<name> : public std::true_type {}
 
 // White-list objects that can be managed by HermesValue.
+HERMES_VM_GCOBJECT(BigIntPrimitive);
 HERMES_VM_GCOBJECT(StringPrimitive);
 HERMES_VM_GCOBJECT(JSObject);
 HERMES_VM_GCOBJECT(Callable);
@@ -50,6 +51,7 @@ HERMES_VM_GCOBJECT(JSArrayBuffer);
 HERMES_VM_GCOBJECT(JSDataView);
 HERMES_VM_GCOBJECT(JSTypedArrayBase);
 HERMES_VM_GCOBJECT(JSString);
+HERMES_VM_GCOBJECT(JSBigInt);
 HERMES_VM_GCOBJECT(JSNumber);
 HERMES_VM_GCOBJECT(JSBoolean);
 HERMES_VM_GCOBJECT(JSSymbol);
@@ -63,6 +65,7 @@ HERMES_VM_GCOBJECT(RequireContext);
 HERMES_VM_GCOBJECT(HashMapEntry);
 HERMES_VM_GCOBJECT(OrderedHashMap);
 HERMES_VM_GCOBJECT(JSWeakMapImplBase);
+HERMES_VM_GCOBJECT(JSWeakRef);
 HERMES_VM_GCOBJECT(JSArrayIterator);
 HERMES_VM_GCOBJECT(JSStringIterator);
 HERMES_VM_GCOBJECT(JSRegExpStringIterator);
@@ -181,6 +184,32 @@ struct HermesValueTraits<SymbolID> {
   }
   static value_type decode(HermesValue value) {
     return value.getSymbol();
+  }
+};
+
+template <>
+struct HermesValueTraits<BigIntPrimitive> {
+  using value_type = BigIntPrimitive *;
+  using arrow_type = value_type;
+  static constexpr bool is_cell = true;
+
+  static constexpr value_type defaultValue() {
+    return value_type{};
+  }
+  static HermesValue encode(value_type value) {
+    return HermesValue::encodeBigIntValueUnsafe(value);
+  }
+  static value_type decode(HermesValue value) {
+    return (value_type)value.getBigInt();
+  }
+  static arrow_type arrow(const HermesValue &value) {
+    auto *res = decode(value);
+    assert(res && "dereferencing null handle");
+    return res;
+  }
+  static arrow_type arrow(value_type ptr) {
+    assert(ptr && "dereferencing null handle");
+    return ptr;
   }
 };
 

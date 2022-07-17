@@ -78,6 +78,7 @@ class JSArrayBuffer final : public JSObject {
 
   /// Get the size of this buffer.
   size_type size() const {
+    assert(attached() && "Cannot get size from a detached ArrayBuffer");
     return size_;
   }
 
@@ -87,6 +88,9 @@ class JSArrayBuffer final : public JSObject {
   bool attached() const {
     return attached_;
   }
+
+  /// Free the data block owned by this JSArrayBuffer.
+  void freeInternalBuffer(GC &gc);
 
   /// Detaches this buffer from its data block, effectively freeing the storage
   /// and setting this ArrayBuffer to have zero size.  The \p gc argument allows
@@ -102,7 +106,8 @@ class JSArrayBuffer final : public JSObject {
 #endif
 
  private:
-  XorPtr<uint8_t> data_;
+  /// data_ and size_ are only valid when attached_ is true.
+  XorPtr<uint8_t, XorPtrKeyID::ArrayBufferData> data_;
   size_type size_;
   bool attached_;
 

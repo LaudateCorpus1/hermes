@@ -136,6 +136,7 @@ SynthTrace::SynthTrace(
     json_->emitKeyValue("ES6Promise", conf.getES6Promise());
     json_->emitKeyValue("ES6Proxy", conf.getES6Proxy());
     json_->emitKeyValue("Intl", conf.getIntl());
+    json_->emitKeyValue("MicrotasksQueue", conf.getMicrotaskQueue());
     json_->emitKeyValue("enableSampledStats", conf.getEnableSampledStats());
     json_->emitKeyValue("vmExperimentFlags", conf.getVMExperimentFlags());
     json_->closeDict();
@@ -735,28 +736,6 @@ void SynthTrace::flushAndDisable(
   // Env section.
   json_->emitKey("env");
   json_->openDict();
-  json_->emitKeyValue("mathRandomSeed", env.mathRandomSeed);
-
-  json_->emitKey("callsToDateNow");
-  json_->openArray();
-  for (uint64_t dateNow : env.callsToDateNow) {
-    json_->emitValue(dateNow);
-  }
-  json_->closeArray();
-
-  json_->emitKey("callsToNewDate");
-  json_->openArray();
-  for (uint64_t newDate : env.callsToNewDate) {
-    json_->emitValue(newDate);
-  }
-  json_->closeArray();
-
-  json_->emitKey("callsToDateAsFunction");
-  json_->openArray();
-  for (const std::string &dateAsFunc : env.callsToDateAsFunction) {
-    json_->emitValue(dateAsFunc);
-  }
-  json_->closeArray();
 
   json_->emitKey("callsToHermesInternalGetInstrumentedStats");
   json_->openArray();
