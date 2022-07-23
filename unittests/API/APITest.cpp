@@ -537,6 +537,51 @@ TEST_F(HermesRuntimeTest, HostObjectAsParentTest) {
       eval("var subClass = {__proto__: ho}; subClass.prop1 == 10;").getBool());
 }
 
+TEST_F(HermesRuntimeTest, NativeStateTest) {
+  class C : public facebook::jsi::NativeState {
+   public:
+    int *dtors;
+    C(int *_dtors) : dtors(_dtors) {}
+    virtual ~C() override {
+      ++*dtors;
+    }
+  };
+  int dtors1 = 0;
+  int dtors2 = 0;
+  {
+    Object obj = eval("({one: 1})").getObject(*rt);
+    ASSERT_FALSE(obj.hasNativeState<C>(*rt));
+    {
+      // Set some state.
+      obj.setNativeState(*rt, std::make_shared<C>(&dtors1));
+      ASSERT_TRUE(obj.hasNativeState<C>(*rt));
+      auto ptr = obj.getNativeState<C>(*rt);
+      EXPECT_EQ(ptr->dtors, &dtors1);
+    }
+    {
+      // Overwrite the state.
+      obj.setNativeState(*rt, std::make_shared<C>(&dtors2));
+      ASSERT_TRUE(obj.hasNativeState<C>(*rt));
+      auto ptr = obj.getNativeState<C>(*rt);
+      EXPECT_EQ(ptr->dtors, &dtors2);
+    }
+  } // closing scope -> obj unreachable
+  // should finalize both
+  eval("gc()");
+  EXPECT_EQ(1, dtors1);
+  EXPECT_EQ(1, dtors2);
+
+  // Trying to set native state on frozen object should throw.
+  {
+    Object frozen = eval("Object.freeze({one: 1})").getObject(*rt);
+    ASSERT_THROW(
+        frozen.setNativeState(*rt, std::make_shared<C>(&dtors1)), JSIException);
+  }
+  // Make sure any NativeState cells are finalized before leaving, since they
+  // point to local variables. Otherwise ASAN will complain.
+  eval("gc()");
+}
+
 TEST_F(HermesRuntimeTest, PropNameIDFromSymbol) {
   auto strProp = PropNameID::forAscii(*rt, "a");
   auto secretProp = PropNameID::forSymbol(

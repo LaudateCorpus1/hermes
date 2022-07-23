@@ -41,12 +41,6 @@ void FreelistBuildMeta(const GCCell *cell, Metadata::Builder &mb) {
   mb.setVTable(&HadesGC::OldGen::FreelistCell::vt);
 }
 
-HadesGC::HeapSegment::HeapSegment(AlignedStorage storage)
-    : AlignedHeapSegment{std::move(storage)} {
-  // Make sure end() is at the maxSize.
-  growToLimit();
-}
-
 GCCell *HadesGC::OldGen::finishAlloc(GCCell *cell, uint32_t sz) {
   // Track the number of allocated bytes in a segment.
   incrementAllocatedBytes(sz);
@@ -1302,6 +1296,7 @@ HadesGC::HadesGC(
           kConcurrentGC ? std::make_unique<Executor>() : nullptr},
       promoteYGToOG_{!gcConfig.getAllocInYoung()},
       revertToYGAtTTI_{gcConfig.getRevertToYGAtTTI()},
+      overwriteDeadYGObjects_{gcConfig.getOverwriteDeadYGObjects()},
       occupancyTarget_(gcConfig.getOccupancyTarget()),
       ygAverageSurvivalBytes_{
           /*weight*/ 0.5,
@@ -1559,11 +1554,9 @@ void HadesGC::oldGenCollection(std::string cause, bool forceCompaction) {
   ogCollectionStats_->setBeforeSizes(
       oldGen_.allocatedBytes(), oldGen_.externalBytes(), segmentFootprint());
 
-  if (revertToYGAtTTI_) {
-    // If we've reached the first OG collection, and reverting behavior is
-    // requested, switch back to YG mode.
-    promoteYGToOG_ = false;
-  }
+  // If we've reached the first OG collection, switch back to YG mode.
+  promoteYGToOG_ = false;
+
   // First, clear any mark bits that were set by a previous collection or
   // direct-to-OG allocation, they aren't needed anymore.
   for (HeapSegment &seg : oldGen_)
@@ -2189,7 +2182,8 @@ void HadesGC::forAllObjs(const std::function<void(GCCell *)> &callback) {
 }
 
 void HadesGC::ttiReached() {
-  promoteYGToOG_ = false;
+  if (revertToYGAtTTI_)
+    promoteYGToOG_ = false;
 }
 
 #ifndef NDEBUG
@@ -2217,14 +2211,14 @@ void *HadesGC::allocSlow(uint32_t sz) {
   // Failed to alloc in young gen, do a young gen collection.
   youngGenCollection(
       kNaturalCauseForAnalytics, /*forceOldGenCollection*/ false);
-  res = youngGen().bumpAlloc(sz);
+  res = youngGen().alloc(sz);
   if (res.success)
     return res.ptr;
 
   // Still fails after YG collection, perhaps it is a large alloc, try growing
   // the YG to full size.
   youngGen().clearExternalMemoryCharge();
-  res = youngGen().bumpAlloc(sz);
+  res = youngGen().alloc(sz);
   if (res.success)
     return res.ptr;
 
@@ -2268,7 +2262,7 @@ GCCell *HadesGC::OldGen::alloc(uint32_t sz) {
   llvh::ErrorOr<HeapSegment> seg = gc_.createSegment();
   if (seg) {
     // Complete this allocation using a bump alloc.
-    AllocResult res = seg->bumpAlloc(sz);
+    AllocResult res = seg->alloc(sz);
     assert(
         res.success &&
         "A newly created segment should always be able to allocate");
@@ -2509,6 +2503,10 @@ void HadesGC::youngGenCollection(
     // This was modified by debitExternalMemoryFromFinalizer, called by
     // finalizers. The difference in the value before to now was the swept bytes
     externalBytes.after = getYoungGenExternalBytes();
+
+    if (overwriteDeadYGObjects_)
+      memset(yg.start(), kInvalidHeapValue, yg.used());
+
     // Now the copy list is drained, and all references point to the old
     // gen. Clear the level of the young gen.
     yg.resetLevel();
@@ -3014,7 +3012,7 @@ void HadesGC::OldGen::addSegment(HeapSegment seg) {
   // Add the remainder of the segment to the freelist.
   uint32_t sz = newSeg.available();
   if (sz >= minAllocationSize()) {
-    auto res = newSeg.bumpAlloc(sz);
+    auto res = newSeg.alloc(sz);
     assert(res.success);
     auto bucket = getFreelistBucket(sz);
     addCellToFreelist(res.ptr, sz, &segmentBuckets_.back()[bucket]);

@@ -256,7 +256,7 @@ SynthTrace getTrace(JSONArray *array, SynthTrace::ObjectID globalObjID) {
     auto *hostObjID =
         llvh::dyn_cast_or_null<JSONNumber>(obj->get("hostObjectID"));
     auto *funcID = llvh::dyn_cast_or_null<JSONNumber>(obj->get("functionID"));
-    auto *propID = llvh::dyn_cast_or_null<JSONNumber>(obj->get("propID"));
+    auto *propID = llvh::dyn_cast_or_null<JSONString>(obj->get("propID"));
     auto *propNameID =
         llvh::dyn_cast_or_null<JSONNumber>(obj->get("propNameID"));
     auto *propName = llvh::dyn_cast_or_null<JSONString>(obj->get("propName"));
@@ -393,7 +393,7 @@ SynthTrace getTrace(JSONArray *array, SynthTrace::ObjectID globalObjID) {
         trace.emplace_back<SynthTrace::GetPropertyRecord>(
             timeFromStart,
             objID->getValue(),
-            propID->getValue(),
+            SynthTrace::decode(propID->str()),
 #ifdef HERMESVM_API_TRACE_DEBUG
             std::string(propName->c_str()),
 #endif
@@ -403,7 +403,7 @@ SynthTrace getTrace(JSONArray *array, SynthTrace::ObjectID globalObjID) {
         trace.emplace_back<SynthTrace::SetPropertyRecord>(
             timeFromStart,
             objID->getValue(),
-            propID->getValue(),
+            SynthTrace::decode(propID->str()),
 #ifdef HERMESVM_API_TRACE_DEBUG
             std::string(propName->c_str()),
 #endif
@@ -413,7 +413,7 @@ SynthTrace getTrace(JSONArray *array, SynthTrace::ObjectID globalObjID) {
         trace.emplace_back<SynthTrace::HasPropertyRecord>(
             timeFromStart,
             objID->getValue(),
-            propID->getValue()
+            SynthTrace::decode(propID->str())
 #ifdef HERMESVM_API_TRACE_DEBUG
                 ,
             std::string(propName->c_str())

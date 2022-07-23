@@ -782,16 +782,12 @@ CallResult<HermesValue> toObject(Runtime &runtime, Handle<> valueHandle) {
                  Handle<JSObject>::vmcast(&runtime.booleanPrototype))
           .getHermesValue();
     case HermesValue::ETag::BigInt1:
-    case HermesValue::ETag::BigInt2: {
-      auto res = JSBigInt::create(
-          runtime,
-          Handle<BigIntPrimitive>::vmcast(valueHandle),
-          Handle<JSObject>::vmcast(&runtime.bigintPrototype));
-      if (LLVM_UNLIKELY(res == ExecutionStatus::EXCEPTION)) {
-        return ExecutionStatus::EXCEPTION;
-      }
-      return res->getHermesValue();
-    }
+    case HermesValue::ETag::BigInt2:
+      return JSBigInt::create(
+                 runtime,
+                 Handle<BigIntPrimitive>::vmcast(valueHandle),
+                 Handle<JSObject>::vmcast(&runtime.bigintPrototype))
+          .getHermesValue();
     case HermesValue::ETag::Str1:
     case HermesValue::ETag::Str2: {
       auto res = JSString::create(
@@ -2266,25 +2262,11 @@ CallResult<HermesValue> stringToBigInt_RJS(Runtime &runtime, Handle<> value) {
 }
 
 CallResult<HermesValue> thisBigIntValue(Runtime &runtime, Handle<> value) {
-  switch (value->getTag()) {
-    default:
-      break;
-
-    case HermesValue::Tag::BigInt:
-      return *value;
-
-    case HermesValue::Tag::Object:
-      if (auto jsBigInt = Handle<JSBigInt>::dyn_vmcast(value)) {
-        if (value->getRaw() != runtime.bigintPrototype.getRaw()) {
-          BigIntPrimitive *bigint =
-              JSBigInt::getPrimitiveBigInt(jsBigInt.get(), runtime);
-          assert(bigint && "boxed bigint is missing its primitive");
-          return HermesValue::encodeBigIntValue(bigint);
-        }
-      }
-      break;
-  }
-
+  if (value->isBigInt())
+    return *value;
+  if (auto *jsBigInt = dyn_vmcast<JSBigInt>(*value))
+    return HermesValue::encodeBigIntValue(
+        JSBigInt::getPrimitiveBigInt(jsBigInt, runtime));
   return runtime.raiseTypeError("value is not a bigint");
 }
 
